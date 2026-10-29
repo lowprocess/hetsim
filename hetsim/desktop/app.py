@@ -201,11 +201,21 @@ class MainWindow(QMainWindow):
         self.panel.message.connect(lambda m: self.show_msgs([("err", m)]))
         self.editor = NetlistEditor()
         self.editor.applyRequested.connect(self.apply_text)
+        # the sliders differ from the text: say so (wrapped: the editor's width must not grow
+        # the panel beside it, which shares its space) and offer to write them in
+        self.pull_box = QWidget()
+        pl = QVBoxLayout(self.pull_box)
+        pl.setContentsMargins(8, 0, 8, 6)
+        note = QLabel("The sliders have changes that aren't in this text; applying the text resets them.")
+        note.setWordWrap(True)
+        note.setStyleSheet(f"color: {theme.c('warn').name()}")
         self.pull = QPushButton("Pull slider values into text")
         self.pull.setToolTip("Rewrite the text from the current settings. Comments are dropped (Ctrl+Z undoes it).")
         self.pull.clicked.connect(self.pull_sliders)
-        self.pull.hide()
-        self.editor.layout().insertWidget(2, self.pull)
+        pl.addWidget(note)
+        pl.addWidget(self.pull, 0, Qt.AlignmentFlag.AlignLeft)
+        self.pull_box.hide()
+        self.editor.layout().insertWidget(2, self.pull_box)
         self.left.addWidget(self.panel)
         self.left.addWidget(self.editor)
         split.addWidget(self.left)
@@ -711,9 +721,7 @@ class MainWindow(QMainWindow):
         self.editor.show_note(f"Applied and saved to {info['file']}.")
 
     def _refresh_pull(self):
-        self.pull.setVisible(self.sliders_dirty)
-        self.pull.setText("The sliders have changes that aren't in this text (applying the text resets them). "
-                          "Pull slider values into text" if self.sliders_dirty else "")
+        self.pull_box.setVisible(self.sliders_dirty)
 
     def pull_sliders(self):
         d = self.model.netlist(self.panel.collect(), self.vs.resolution if self.vs.solver != "tone" else None)

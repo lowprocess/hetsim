@@ -301,7 +301,7 @@ def test_animated_sweep_and_xy_plot(app, tmp_path):
         view = w.xy_tabs.widget(0)
         assert len(view.pts) == 81
         det = next(b for b in w.info["schematic"]["blocks"] if b["name"] == "det1")
-        assert details(det, w.info["groups"], w.sch.readings) == ["peak · 10.6–10.8 MHz", "-43.1 dBm"]
+        assert details(det, w.info["groups"], w.sch.readings) == ["peak · log · 10.6–10.8 MHz", "-43.1 dBm"]
         assert {p.ref: p.control for p in w.sch.blocks["lo"].ports.values()} == {"lo.out": False, "lo.sweep": True}
         assert sum(wi.control for wi in w.sch.wires) == 2                  # the two X/Y wires, dashed
         sweep_before = w.vs.data["sweep"]
@@ -310,9 +310,16 @@ def test_animated_sweep_and_xy_plot(app, tmp_path):
         assert w.frame == 1 and "step 2/81: LO 108.75 MHz" in w.frame_label.text()
         assert w.vs.data["sweep"] is sweep_before                          # frames keep the sweep
         w.frame_slider.setValue(48)                                        # scrub to LO = 111.1 MHz
-        assert w.frame == 48 and w.sch.readings["det1"] == pytest.approx(-3.0, abs=0.1)
+        assert w.frame == 48 and w.sch.readings["det1"]["dbm"] == pytest.approx(-3.0, abs=0.1)
         _paint(w)                                                          # cursor on the X/Y, marks on tracks
         w.stop_animation()
-        assert w.frame is None and w.sch.readings["det1"] == pytest.approx(-43.06, abs=0.05)
+        assert w.frame is None and w.sch.readings["det1"]["dbm"] == pytest.approx(-43.06, abs=0.05)
+        w.panel.show_block("det1")
+        row = w.panel.rows[("det1", "scale")]
+        row.edit.setCurrentText("linear")                                  # switch the detector to linear
+        assert w.sch.readings["det1"]["unit"] == "V"
+        assert details(det, w.info["groups"], w.sch.readings) == ["peak · linear · 10.6–10.8 MHz", "2.224 mV"]
+        _paint(w)                                                          # the X/Y in volts
+        assert w.xy_tabs.widget(0).record()["y_unit"] == "V"
     finally:
         _dispose(w, app)

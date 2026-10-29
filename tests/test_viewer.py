@@ -1,5 +1,6 @@
 """Viewer back end: parameter discovery, edits, and the HTTP API."""
 import json
+import math
 import threading
 import urllib.request
 from pathlib import Path
@@ -405,13 +406,19 @@ def test_xy_plot_of_a_detector_over_the_sweep(tmp_path):
     assert {b["name"]: b["controls"] for b in info["schematic"]["blocks"]}["xy1"] == ["x", "y"]
     req = {"probe": "ifamp.out", "solver": "tone", "min_dbm": -160, "params": {}}
     r = m.simulate(req)
-    assert r["detectors"]["det1"] == pytest.approx(-43.06, abs=0.05)       # the image: IMG - LO at 10.7 MHz
+    assert r["detectors"]["det1"] == {"value": pytest.approx(-43.06, abs=0.05), "unit": "dBm",
+                                      "dbm": pytest.approx(-43.06, abs=0.05)}  # the image: IMG - LO at 10.7 MHz
     xy = r["xy"][0]
     assert xy["note"] is None and len(xy["x"]) == len(xy["y"]) == 81 and xy["x"][0] == 108.7e6
     peak_x = xy["x"][max(range(81), key=lambda i: xy["y"][i] if xy["y"][i] is not None else -999)]
     assert 111.0e6 <= peak_x <= 111.6e6                                  # the -30 dBm blockers B1/B2 tuned in
     f = m.simulate({**req, "sweep_frame": True, "tone_freqs": {"LO": 111.1e6}})
-    assert "sweep" not in f and "xy" not in f and f["detectors"]["det1"] == pytest.approx(-3.0, abs=0.1)
+    assert "sweep" not in f and "xy" not in f and f["detectors"]["det1"]["dbm"] == pytest.approx(-3.0, abs=0.1)
+    lin = m.simulate({**req, "params": {"det1": {"scale": "linear"}}})
+    assert lin["detectors"]["det1"]["unit"] == "V"
+    assert lin["detectors"]["det1"]["value"] == pytest.approx(math.sqrt(100 * 10 ** ((-43.06 - 30) / 10)), rel=0.01)
+    assert lin["xy"][0]["y_unit"] == "V" and min(lin["xy"][0]["y"]) == 0.0   # nothing in band: 0 V, not missing
+    assert lin["xy"][0]["y_label"] == "det1 (V)" and "peak, linear" in lin["xy"][0]["title"]
     m.edit({"op": "disconnect", "a": "xy1.y"})
     assert "wire y" in m.simulate(req)["xy"][0]["note"]
     with pytest.raises(NetlistTextError, match="control port"):

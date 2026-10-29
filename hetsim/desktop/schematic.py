@@ -110,9 +110,23 @@ def _param_of(groups, name, path):
     return p["value"] if p and (not p["optional"] or p["enabled"]) and visible(g, p) else None
 
 
+def fmt_volts(v: float) -> str:
+    for s, u in ((1, "V"), (1e-3, "mV"), (1e-6, "µV")):
+        if abs(v) >= s:
+            return f"{v / s:.4g} {u}"
+    return f"{v / 1e-9:.4g} nV" if v else "0 V"
+
+
+def _fmt_reading(r: dict) -> str:
+    if r["value"] is None:
+        return f"— {r['unit']}"
+    return fmt_volts(r["value"]) if r["unit"] == "V" else f"{r['value']:.1f} dBm"
+
+
 def details(b: dict, groups: list, readings: dict | None = None) -> list[str]:
     """A block's critical values, a few short lines for under its name; they follow the sliders.
-    `readings` holds the detectors' latest values (dBm, None when nothing is in their band)."""
+    `readings` holds the detectors' latest readings ({value, unit, dbm}; value None when a log
+    detector has nothing in its band)."""
     v = lambda path: _param_of(groups, b["name"], path)  # noqa: E731
     n = lambda x: f"{float(x):.1f}".rstrip("0").rstrip(".")  # noqa: E731
     f = lambda x: fmt_f(x, 4)  # noqa: E731
@@ -157,8 +171,8 @@ def details(b: dict, groups: list, readings: dict | None = None) -> list[str]:
         lo, hi = v("fmin"), v("fmax")
         band = rng(lo, hi) if lo is not None and hi is not None else "all" if lo is None and hi is None else \
             f"≥ {f(lo)}" if lo is not None else f"≤ {f(hi)}"
-        r = (readings or {}).get(b["name"], "")
-        return [f"{v('detect')} · {band}", "" if r == "" else "— dBm" if r is None else f"{r:.1f} dBm"]
+        r = (readings or {}).get(b["name"])
+        return [f"{v('detect')} · {v('scale') or 'log'} · {band}", "" if r is None else _fmt_reading(r)]
     if t == "splitter":
         return [join(opt("excess_loss_db", "+", "dB"), opt("isolation_db", "iso", "dB"))]
     if t == "source":

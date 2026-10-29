@@ -504,10 +504,16 @@ class XYView(QWidget):
                         (r or {}).get("note") or "wire a swept source's sweep port to x and a detector's out to y")
             return
         xs, ys = r["x"], r["y"]
-        y0 = self.s.floor
         valid = [y for y in ys if y is not None]
-        top = max(valid) if valid else y0 + 10
-        y1 = math.ceil((max(top, y0 + 10) + 5) / 10) * 10
+        linear = r.get("y_unit") == "V"
+        if linear:   # volts: from 0 up, in a unit that suits the largest reading
+            vmax = max(valid, default=0.0) or 1e-6
+            vs, vu = next(((s_, u) for s_, u in ((1, "V"), (1e-3, "mV"), (1e-6, "µV")) if vmax >= s_), (1e-9, "nV"))
+            y0, y1 = 0.0, nice_step(vmax * 1.1, 1) * math.ceil(vmax * 1.1 / nice_step(vmax * 1.1, 1))
+        else:
+            y0 = self.s.floor
+            top = max(valid) if valid else y0 + 10
+            y1 = math.ceil((max(top, y0 + 10) + 5) / 10) * 10
         x0, x1 = min(xs), max(xs)
         if x1 <= x0:
             x1 = x0 + 1
@@ -517,11 +523,12 @@ class XYView(QWidget):
         Y = lambda p: pt + (y1 - max(p, y0)) / (y1 - y0) * ph  # noqa: E731
         ystep = nice_step(y1 - y0, ph / 30)
         v = math.ceil(y0 / ystep) * ystep
-        while v <= y1:
+        while v <= y1 + 1e-12:
             qp.setPen(QPen(theme.c("grid"), 1))
             qp.drawLine(QPointF(pl, Y(v)), QPointF(w - pr, Y(v)))
             qp.setPen(theme.c("text-muted"))
-            qp.drawText(QRectF(0, Y(v) - 8, pl - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, str(round(v)))
+            label = f"{float(f'{v / vs:.6g}'):g}" if linear else str(round(v))
+            qp.drawText(QRectF(0, Y(v) - 8, pl - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, label)
             v += ystep
         us, uu = unit_for(x1)
         xstep = nice_step(x1 - x0, pw / 90)
@@ -537,7 +544,8 @@ class XYView(QWidget):
         qp.save()
         qp.translate(14, pt + ph / 2)
         qp.rotate(-90)
-        qp.drawText(QRectF(-ph / 2, -8, ph, 16), Qt.AlignmentFlag.AlignHCenter, r["y_label"])
+        qp.drawText(QRectF(-ph / 2, -8, ph, 16), Qt.AlignmentFlag.AlignHCenter,
+                    r["y_label"].replace("(V)", f"({vu})") if linear else r["y_label"])
         qp.restore()
         qp.save()
         qp.setClipRect(QRectF(pl, pt, pw, ph))
@@ -571,7 +579,10 @@ class XYView(QWidget):
             if d < bd:
                 bd, best = d, (x, y)
         if best:
-            level = "nothing in the detector's band" if best[1] is None else f"{best[1]:.2f} dBm"
+            r = self.record() or {}
+            from .schematic import fmt_volts
+            level = ("nothing in the detector's band" if best[1] is None
+                     else fmt_volts(best[1]) if r.get("y_unit") == "V" else f"{best[1]:.2f} dBm")
             QToolTip.showText(e.globalPosition().toPoint(), f"<b>{fmt_f(best[0], 9)}</b><br>{level}", self)
         else:
             QToolTip.hideText()

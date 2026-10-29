@@ -215,8 +215,11 @@ Frames reuse the last sweep rather than recomputing it.
 **Detector and X/Y plot** (new block types, available from **+ Add block**):
 - `detector` terminates whatever arrives at `in` and reads its power, over an optional
   `fmin`–`fmax` band. `detect: peak` gives the strongest single product (a peak
-  detector); `total` gives the power sum (a power meter). The reading shows under the
-  block.
+  detector); `total` gives the power sum (a power meter). `scale: log` (the default)
+  reads in dBm. `scale: linear` reads in volts: the peak amplitude of a sine carrying
+  that power into 50 Ω, √(2RP), and 0 V with nothing in band, like a linear or
+  envelope detector. The reading shows under the block, and the X/Y plot's y axis
+  follows the scale (dBm down to the floor, or volts from 0).
 - `xyplot` draws one detector's reading against one swept tone's frequency, a point
   per band-sweep step, in its own tab under the spectrum.
 - Wiring uses **control ports**, drawn as diamonds with dashed wires: wire a source's

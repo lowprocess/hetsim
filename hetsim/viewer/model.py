@@ -32,6 +32,7 @@ CHOICES = {
     "lo_waveform": ["sine", "square"],
     "spur_table": sorted(SPUR_PRESETS),
     "detect": ["peak", "total"],
+    "scale": ["log", "linear"],
 }
 BOOLS = {"harmonics"}
 SKIP = {"file", "tones", "freq", "power", "name", "phase", "harmonics_dbc"}
@@ -783,7 +784,7 @@ class ViewerModel:
                            for t in tone_spec if t.power_dbm >= min_dbm]
             warn = tone_result.warning_text()
             dets = {n: b for n, b in c.blocks.items() if b.kind == "detector"}
-            out["detectors"] = {n: _finite_or_none(b.read(tone_result.incident((n, "in")))) for n, b in dets.items()}
+            out["detectors"] = {n: _reading(b, tone_result.incident((n, "in"))) for n, b in dets.items()}
             swept = [t for b in c.blocks.values() for t in getattr(b, "sweep_specs", lambda: [])()]
             sweep_ports = [probe] + [f"{n}.in" for n in dets]   # detectors' inputs too, for the X/Y plots
             sw = None
@@ -933,6 +934,12 @@ def _finite_or_none(x: float):
     return x if math.isfinite(x) else None
 
 
+def _reading(det, spectrum) -> dict:
+    """A detector's reading: on its own scale (value, unit) and in dBm; None for -inf."""
+    return {"value": _finite_or_none(det.output(spectrum)), "unit": det.unit,
+            "dbm": _finite_or_none(det.read(spectrum))}
+
+
 def xy_plots(c, sw) -> list[dict]:
     """Each X/Y plot block's trace over the band sweep `sw`: x the swept tone's frequency (from the
     source wired to `x`), y the reading of the detector wired to `y` at each step."""
@@ -940,7 +947,7 @@ def xy_plots(c, sw) -> list[dict]:
     for name, b in c.blocks.items():
         if b.kind != "xyplot":
             continue
-        rec = {"name": name, "x": [], "y": [], "x_label": "", "y_label": "", "note": None}
+        rec = {"name": name, "x": [], "y": [], "y_unit": "dBm", "x_label": "", "y_label": "", "note": None}
         xw, yw = c.wires.get((name, "x")), c.wires.get((name, "y"))
         src = c.blocks.get(xw[0]) if xw else None
         det = c.blocks.get(yw[0]) if yw else None
@@ -957,9 +964,9 @@ def xy_plots(c, sw) -> list[dict]:
             band = "" if det.fmin is None and det.fmax is None else \
                 f", {fmt_freq(det.fmin or 0)} – {fmt_freq(det.fmax) if det.fmax else '…'}"
             rec.update(x=[s[t.name] for s in sw.steps],
-                       y=[_finite_or_none(det.read(r.incident((yw[0], "in")))) for r in sw.results],
-                       x_label=f"{t.name} frequency ({xw[0]})", y_label=f"{yw[0]} {det.detect} (dBm)",
-                       title=f"{name}: {yw[0]} {det.detect}{band} vs {t.name}")
+                       y=[_finite_or_none(det.output(r.incident((yw[0], "in")))) for r in sw.results],
+                       y_unit=det.unit, x_label=f"{t.name} frequency ({xw[0]})", y_label=f"{yw[0]} ({det.unit})",
+                       title=f"{name}: {yw[0]} {det.detect}, {det.scale}{band}, vs {t.name}")
         out.append(rec)
     return out
 

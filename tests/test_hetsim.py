@@ -501,7 +501,12 @@ def test_detector_reads_peak_and_total():
     assert Detector(fmin="9MHz", fmax="11MHz", detect="total").read(s) == pytest.approx(-20 + 10 * math.log10(2))
     assert Detector().read(s) == pytest.approx(0)                          # no band: everything
     assert Detector(fmin="1GHz").read(s) == -math.inf
-    for bad in ({"detect": "rms"}, {"fmin": "2MHz", "fmax": "1MHz"}):
+    lin = Detector(fmin="9MHz", fmax="11MHz", scale="linear")
+    assert lin.unit == "V" and lin.output(s) == pytest.approx(math.sqrt(2 * 50 * 1e-5))   # -20 dBm: 31.6 mV peak
+    assert Detector(fmin="1GHz", scale="linear").output(s) == 0.0
+    assert Detector().output(s) == pytest.approx(0) and Detector().unit == "dBm"
+    assert "scale" not in Detector().to_params() and Detector(scale="linear").to_params()["scale"] == "linear"
+    for bad in ({"detect": "rms"}, {"fmin": "2MHz", "fmax": "1MHz"}, {"scale": "sqrt"}):
         with pytest.raises(ValueError):
             Detector(**bad)
 
