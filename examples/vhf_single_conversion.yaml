@@ -1,0 +1,35 @@
+# Single-conversion VHF receiver, 10.7 MHz IF, high-side LO.
+#   python -m hetsim run examples/vhf_single_conversion.yaml -p ifamp.out --sort power --limit 15
+#   python -m hetsim run examples/vhf_single_conversion.yaml -p ant.out --incident      # LO radiated
+#   python -m hetsim responses examples/vhf_single_conversion.yaml --source ant --port ifamp.out \
+#       --band 10.6MHz:10.8MHz --range 1MHz:500MHz --mute ant   # --mute silences the other tones in those sources
+#   python -m hetsim run examples/vhf_single_conversion.yaml -p ifamp.out --solver td --band 9MHz:12MHz
+name: VHF single conversion
+settings:
+  floor_dbm: -200
+  td: {alias_db: 120}        # time-domain solver options (resolution, fmax, fs, seed...)
+blocks:
+  ant:
+    type: source
+    tones:
+      - {name: RF,  freq: 100MHz,   power: -80}   # wanted
+      - {name: B1,  freq: 100.4MHz, power: -30}   # two strong neighbours: 2*B1-B2 lands on 100 MHz
+      - {name: B2,  freq: 100.8MHz, power: -30}
+      - {name: IMG, freq: 121.4MHz, power: -50}   # sits on the image (LO + IF)
+  pre:   {type: filter, response: bandpass, family: butter, order: 3, f1: 88MHz, f2: 108MHz, insertion_loss_db: 1.5}
+  lna:   {type: amplifier, gain_db: 15, oip3_dbm: 30, op1db_dbm: 18, reverse_isolation_db: 30}
+  lo:    {type: source, name: LO, freq: 110.7MHz, power: 7, harmonics_dbc: [-30, -40]}
+  mix:
+    type: mixer
+    conversion_loss_db: 6
+    lo_rf_isolation_db: 35
+    lo_if_isolation_db: 30
+    rf_if_isolation_db: 25
+    iip3_dbm: 15
+    spur_table: dbm_generic
+    lo_drive_dbm: 7
+  iff:   {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90}
+  ifamp: {type: amplifier, gain_db: 20, oip3_dbm: 25}
+chain: [ant, pre, lna, mix, iff, ifamp]
+wires:
+  - [lo.out, mix.lo]

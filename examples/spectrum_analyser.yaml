@@ -1,0 +1,118 @@
+name: spectrum analyser
+blocks:
+  ant:
+    type: source
+    tones:
+    - name: RF
+      freq: 92000000
+      power: 1
+      mute: true
+    - name: BLK
+      freq: 1000000000
+      power: -9
+  lpf:
+    type: filter
+    response: lowpass
+    family: butter
+    order: 3
+    fc: 3400000000
+    insertion_loss_db: 0.5
+    max_rejection_db: 120
+  lna:
+    type: amplifier
+    gain_db: 10
+    oip3_dbm: 35
+    reverse_isolation_db: 30
+    harmonics: false
+  lo1:
+    type: source
+    tones:
+    - name: LO1
+      freq: 4222000000
+      power: 7
+      band:
+      - 3200000000
+      - 6400000000
+      mode: sweep
+      points: 32
+      spacing: log
+  mix1:
+    type: mixer
+    conversion_loss_db: 6.5
+    lo_rf_isolation_db: 40
+    lo_if_isolation_db: 35
+    rf_if_isolation_db: 30
+    iip3_dbm: 15
+    spur_table: ideal
+    lo_drive_dbm: 7
+    lo_drive_tolerance_db: 3
+    lo_waveform: sine
+  roof:
+    type: filter
+    response: bandpass
+    family: butter
+    order: 5
+    f0: 3200000000
+    bw: 100000000
+    insertion_loss_db: 2
+    max_rejection_db: 80
+  if1amp:
+    type: amplifier
+    gain_db: 12
+    oip3_dbm: 30
+    reverse_isolation_db: 30
+    harmonics: false
+  lo2:
+    type: source
+    tones:
+    - name: LO2
+      freq: 3290000000
+      power: 7
+  mix2:
+    type: mixer
+    conversion_loss_db: 6.5
+    lo_rf_isolation_db: 40
+    lo_if_isolation_db: 35
+    rf_if_isolation_db: 30
+    iip3_dbm: 15
+    spur_table: ideal
+    lo_drive_dbm: 7
+    lo_drive_tolerance_db: 3
+    lo_waveform: sine
+  iff:
+    type: filter
+    response: bandpass
+    family: butter
+    order: 5
+    f0: 10000000
+    bw: 16000000
+    insertion_loss_db: 0
+    max_rejection_db: 80
+  ifamp:
+    type: amplifier
+    gain_db: 30
+    oip3_dbm: 25
+    reverse_isolation_db: 30
+    harmonics: true
+settings: {}
+wires:
+- - ant.out
+  - lpf.in
+- - lpf.out
+  - lna.in
+- - lna.out
+  - mix1.rf
+- - mix1.if
+  - roof.in
+- - roof.out
+  - if1amp.in
+- - if1amp.out
+  - mix2.rf
+- - mix2.if
+  - iff.in
+- - iff.out
+  - ifamp.in
+- - lo1.out
+  - mix1.lo
+- - lo2.out
+  - mix2.lo

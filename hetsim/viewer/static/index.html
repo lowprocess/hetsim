@@ -1,0 +1,1850 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hetsim viewer</title>
+<style>
+:root {
+  --surface-0: #f4f3f0; --surface-1: #fcfcfb; --surface-2: #ffffff;
+  --border: #dddcd7; --grid: #e7e6e2;
+  --text-primary: #0b0b0b; --text-secondary: #52514e; --text-muted: #85847f;
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a;
+  --accent: #2a78d6; --warn: #b97700; --error: #d03b3b;
+  --select: rgba(42,120,214,0.12);
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface-0: #121211; --surface-1: #1a1a19; --surface-2: #232321;
+    --border: #383835; --grid: #2c2c2a;
+    --text-primary: #f0efec; --text-secondary: #c3c2b7; --text-muted: #8c8b84;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70;
+    --accent: #3987e5; --warn: #e0a320; --error: #e66767;
+    --select: rgba(57,135,229,0.18);
+    color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--surface-0); color: var(--text-primary);
+  font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: grid; grid-template-rows: auto 1fr; overflow: hidden;
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px;
+  padding: 8px 16px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+}
+header h1 { font-size: 14px; font-weight: 600; margin: 0 8px 0 0; }
+header label { color: var(--text-secondary); display: flex; align-items: center; gap: 6px; }
+select, input[type=text], input[type=number], button {
+  font: inherit; color: var(--text-primary); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; padding: 3px 6px;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; border-color: var(--border); }
+button.primary, button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; background: var(--surface-2); padding: 3px 10px; }
+.seg button.on { background: var(--accent); color: #fff; }
+#swctl { display: inline-flex; align-items: center; gap: 8px; color: var(--text-secondary); }
+#swctl label { display: flex; align-items: center; gap: 6px; }
+#status { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+#status.busy::before { content: "● "; color: var(--accent); }
+main { display: grid; grid-template-columns: 340px 1fr; min-height: 0; }
+main.editing { grid-template-columns: minmax(400px, 44%) 1fr; }
+#side { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); background: var(--surface-1); }
+#params { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 24px; }
+main.editing #params { display: none; }
+#editor { display: none; flex: 1; min-height: 0; flex-direction: column; }
+main.editing #editor { display: flex; }
+.edbar { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+#edfile { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+#edstate { color: var(--warn); font-size: 12px; }
+#ednote { font-size: 12px; color: var(--text-secondary); }
+#ednote div { padding: 6px 12px; border-bottom: 1px solid var(--border); white-space: pre-wrap; }
+#ednote .err { color: var(--error); }
+#ednote .warn { color: var(--warn); }
+#ednote button { margin-left: 6px; font-size: 12px; padding: 1px 6px; }
+.edwrap { flex: 1; min-height: 0; display: flex; background: var(--surface-2); }
+#gutter, #src { font: 12px/18px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#gutter {
+  margin: 0; padding: 8px 8px 8px 0; min-width: 44px; text-align: right; overflow: hidden;
+  color: var(--text-muted); background: var(--surface-1); border-right: 1px solid var(--border); user-select: none;
+}
+#gutter .bad { color: var(--error); font-weight: 700; }
+#src {
+  flex: 1; min-width: 0; margin: 0; padding: 8px 10px; border: 0; border-radius: 0; resize: none; outline: none;
+  white-space: pre; overflow: auto; tab-size: 2; color: var(--text-primary); background: var(--surface-2);
+}
+details { border-bottom: 1px solid var(--border); }
+summary { cursor: pointer; padding: 8px 16px; font-weight: 600; list-style: none; display: flex; gap: 8px; align-items: baseline; }
+summary::-webkit-details-marker { display: none; }
+summary::before { content: "▸"; color: var(--text-muted); width: 10px; }
+details[open] summary::before { content: "▾"; }
+summary .type { color: var(--text-muted); font-weight: 400; }
+.row { display: grid; grid-template-columns: 18px 1fr 92px; grid-template-rows: auto auto; gap: 0 6px; padding: 3px 16px 5px; align-items: center; }
+.row .lab { color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .val { grid-column: 3; text-align: right; width: 92px; padding: 2px 4px; font-variant-numeric: tabular-nums; }
+.row input[type=range] { grid-column: 2 / 4; width: 100%; margin: 2px 0 0; accent-color: var(--accent); }
+.row select { grid-column: 3; width: 92px; }
+.row.off .lab, .row.off .val, .row.off input[type=range] { opacity: 0.45; }
+.row.hidden { display: none; }
+.row .lab.limlab { cursor: pointer; }
+.row .lab.limlab:hover { color: var(--accent); }
+.limtag { margin-left: 6px; padding: 0 4px; border-radius: 4px; font-size: 10px; color: var(--accent); border: 1px solid var(--accent); }
+.pnbox { padding: 0 16px 8px 40px; font-size: 12px; color: var(--text-secondary); }
+.pnbox.off { opacity: 0.45; }
+.pntbl { display: grid; grid-template-columns: 1fr 1fr 22px; gap: 3px 6px; align-items: center; }
+.pntbl .h { color: var(--text-muted); font-size: 11px; }
+.pntbl input { width: 100%; padding: 2px 4px; font-variant-numeric: tabular-nums; text-align: right; }
+.pntbl button, .pnbtns button { font-size: 12px; padding: 0 5px; }
+.pnbtns { display: flex; gap: 6px; margin-top: 4px; }
+.limrow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 0 16px 8px 40px; font-size: 12px; color: var(--text-secondary); }
+.limrow input { width: 84px; padding: 2px 4px; font-variant-numeric: tabular-nums; }
+.limrow button { font-size: 12px; padding: 1px 6px; }
+#plots { display: grid; grid-template-rows: var(--sch-h, 230px) 1fr 150px auto; min-width: 0; min-height: 0; padding: 8px 16px 8px; gap: 8px; }
+#plots.nosch { grid-template-rows: 1fr 150px auto; }
+#plots.nosch #schp { display: none; }
+#schp { display: flex; flex-direction: column; overflow: hidden; }
+.schbar { display: flex; align-items: center; gap: 6px; padding: 5px 8px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.schbar select, .schbar button { font-size: 12px; padding: 2px 6px; }
+.schbar .hint2 { margin-left: auto; min-width: 0; color: var(--text-muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#sch { flex: 1; width: 100%; min-height: 0; display: block; touch-action: none; outline: none; user-select: none; cursor: grab; }
+#sch:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+#schresize { position: absolute; left: 0; right: 0; bottom: -2px; height: 8px; cursor: ns-resize; }
+#sch .dots { fill: var(--border); }
+#sch .blk { cursor: move; }
+#sch .blk-body { fill: var(--surface-2); stroke: var(--text-secondary); stroke-width: 1.5; }
+#sch .blk.sel .blk-body { stroke: var(--accent); stroke-width: 2.5; }
+#sch .sym, #sch .lead { fill: none; stroke: var(--text-primary); stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+#sch .lead { stroke: var(--text-secondary); }
+#sch .symt { fill: var(--text-primary); font: 11px system-ui, sans-serif; text-anchor: middle; }
+#sch .bname { fill: var(--text-primary); font: 600 12px system-ui, sans-serif; text-anchor: middle; }
+#sch .bsum { fill: var(--text-muted); font: 11px system-ui, sans-serif; text-anchor: middle; font-variant-numeric: tabular-nums; }
+#sch .plab { fill: var(--text-muted); font: 10px system-ui, sans-serif; }
+#sch .wire { fill: none; stroke: var(--text-secondary); stroke-width: 1.5; stroke-linejoin: round; }
+#sch .wire.sel { stroke: var(--accent); stroke-width: 2.5; }
+#sch .whit { fill: none; stroke: transparent; stroke-width: 10; cursor: pointer; }
+#sch .port { fill: var(--surface-2); stroke: var(--text-secondary); stroke-width: 1.5; cursor: crosshair; }
+#sch .port.wired { fill: var(--text-secondary); }
+#sch .port:hover, #sch .port.hot { fill: var(--accent); stroke: var(--accent); }
+#sch .port.probe { fill: var(--series-2); stroke: var(--series-2); }
+#sch .ptag { fill: var(--series-2); font: 600 10px system-ui, sans-serif; }
+#sch .tmpwire { fill: none; stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; pointer-events: none; }
+#sch .empty { fill: var(--text-muted); font: 12px system-ui, sans-serif; text-anchor: middle; }
+details.flash > summary { background: var(--select); }
+summary { transition: background 0.4s; }
+.panel { position: relative; background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; min-height: 0; }
+.panel canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+#fftp canvas { cursor: crosshair; }
+.hint { position: absolute; right: 10px; bottom: 4px; color: var(--text-muted); font-size: 11px; pointer-events: none; }
+#tip {
+  position: fixed; pointer-events: none; display: none; z-index: 10;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: 6px;
+  padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.15); font-variant-numeric: tabular-nums; max-width: 360px;
+}
+#tip .t1 { font-weight: 600; }
+#tip .t2 { color: var(--text-secondary); }
+#msgs { color: var(--text-secondary); font-size: 12px; white-space: pre-wrap; max-height: 72px; overflow-y: auto; }
+#msgs .err { color: var(--error); }
+#msgs .warn { color: var(--warn); }
+@media (max-width: 760px) {
+  body { overflow: auto; }
+  main, main.editing { grid-template-columns: 1fr; }
+  #side { border-right: 0; max-height: 45vh; }
+  main.editing #side { max-height: none; height: 60vh; }
+  #plots { grid-template-rows: 260px 360px 140px auto; }
+  #plots.nosch { grid-template-rows: 360px 140px auto; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">hetsim viewer</h1>
+  <label>Port <select id="probe"></select></label>
+  <div class="seg" id="dir"><button data-v="out" class="on">leaving</button><button data-v="in">arriving</button></div>
+  <div class="seg" id="solver"><button data-v="td" class="on">Time domain</button><button data-v="both">TD + tone</button><button data-v="tone">Tone</button></div>
+  <label>Resolution <input type="text" id="res" size="8"></label>
+  <span id="swctl" style="display:none">
+    <label title="Show each product's track while the swept tones step across their bands"><input type="checkbox" id="swshow" checked> Band sweep</label>
+    <label title="Sweep steps to compute. Empty: the tones' points, reduced to keep updates quick">Steps <input type="text" id="swpts" size="4" placeholder="auto"></label>
+    <select id="swinterp" title="Draw the tracks between computed steps. Frequencies interpolate exactly; levels are estimated">
+      <option value="0">no interpolation</option>
+      <option value="lin4">linear ×4</option>
+      <option value="lin8">linear ×8</option>
+      <option value="pchip4">smooth ×4</option>
+      <option value="pchip8">smooth ×8</option>
+      <option value="pchip16">smooth ×16</option>
+    </select>
+    <select id="swplace" title="Where the sweep steps go: evenly across the swept band, or so the anchor product (the selected track, else the strongest swept one) lands on fixed output frequencies">
+      <option value="band">steps across band</option>
+      <option value="out">steps on output grid</option>
+    </select>
+    <span id="swoutbox" style="display:none">
+      <input type="text" id="swfrom" size="8" title="output grid from"> – <input type="text" id="swto" size="8" title="output grid to">
+      <button id="swview" title="Use the plot's current frequency range">view</button>
+    </span>
+    <select id="swpick" title="Show one product's track (or click a track on the plot; Esc shows all)" style="max-width:180px">
+      <option value="">all tracks</option>
+    </select>
+  </span>
+  <label title="Draw the spectrum as a swept analyser would: each line through a Gaussian RBW filter, peak detector, phase noise included">RBW
+    <select id="rbw">
+      <option value="">off</option><option>1 kHz</option><option>3 kHz</option><option>10 kHz</option><option>30 kHz</option>
+      <option>100 kHz</option><option>300 kHz</option><option>1 MHz</option><option>3 MHz</option>
+    </select></label>
+  <label id="pnlab" style="display:none" title="Include the sources' phase noise (seen through the RBW trace)"><input type="checkbox" id="pnon" checked> Phase noise</label>
+  <label>Floor <input type="number" id="floor" value="-160" step="10" style="width:70px"> dBm</label>
+  <button id="schtoggle" class="on" title="Show or hide the schematic">Schematic</button>
+  <button id="edit" title="Edit the netlist source">Netlist</button>
+  <button id="export" title="Download the netlist with the current settings">Export netlist</button>
+  <span id="status"></span>
+</header>
+<main id="main">
+  <div id="side">
+    <div id="params"></div>
+    <div id="editor">
+      <div class="edbar">
+        <span id="edfile"></span><span id="edstate"></span>
+        <button id="edrevert" title="Discard edits since the last apply">Revert</button>
+        <button id="edapply" class="primary" title="Rebuild the circuit from this text (Ctrl+Enter)">Apply</button>
+        <button id="edsave" title="Apply, then write this text to the netlist file (Ctrl+S)">Save</button>
+      </div>
+      <div id="ednote"></div>
+      <div class="edwrap">
+        <pre id="gutter" aria-hidden="true"></pre>
+        <textarea id="src" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="netlist source"></textarea>
+      </div>
+    </div>
+  </div>
+  <div id="plots">
+    <div class="panel" id="schp">
+      <div class="schbar">
+        <select id="schadd" title="Add a block at the centre of the view"><option value="">+ Add block</option></select>
+        <button id="schdel" title="Delete the selected block or wire (Del)" disabled>Delete</button>
+        <button id="schundo" title="Undo the last netlist change (Ctrl+Z)" disabled>Undo</button>
+        <button id="schfit" title="Fit the schematic to the panel (F)">Fit</button>
+        <span class="hint2">drag port to port to wire · click a port to probe it · double-click a block to rename</span>
+      </div>
+      <svg id="sch" tabindex="0" aria-label="schematic"></svg>
+      <div id="schresize" title="drag to resize"></div>
+    </div>
+    <div class="panel" id="fftp"><canvas id="fft"></canvas><span class="hint">drag to zoom · wheel to zoom · double-click to reset</span></div>
+    <div class="panel" id="wavep"><canvas id="wave"></canvas></div>
+    <div id="msgs"></div>
+  </div>
+</main>
+<div id="tip"></div>
+<script>
+"use strict";
+// ------------------------------------------------------------------ helpers
+const $ = (id) => document.getElementById(id);
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function fmtF(f, digits = 6) {
+  const a = Math.abs(f);
+  for (const [s, u] of [[1e9, "GHz"], [1e6, "MHz"], [1e3, "kHz"]]) {
+    if (a >= s) return +(f / s).toPrecision(digits) + " " + u;
+  }
+  return +f.toPrecision(digits) + " Hz";
+}
+function fmtT(t) {
+  const a = Math.abs(t);
+  for (const [s, u] of [[1, "s"], [1e-3, "ms"], [1e-6, "µs"], [1e-9, "ns"]]) {
+    if (a >= s) return +(t / s).toPrecision(4) + " " + u;
+  }
+  return +(t / 1e-12).toPrecision(4) + " ps";
+}
+function parseF(s) {
+  const m = String(s).trim().match(/^([-+]?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?)\s*([kKMGT]?)\s*(?:hz)?$/i);
+  if (!m) return NaN;
+  return parseFloat(m[1]) * ({ "": 1, k: 1e3, K: 1e3, M: 1e6, G: 1e9, T: 1e12 }[m[2]]);
+}
+function niceStep(span, target) {
+  const raw = span / Math.max(target, 1);
+  const p = Math.pow(10, Math.floor(Math.log10(raw)));
+  for (const m of [1, 2, 5, 10]) if (raw <= m * p) return m * p;
+  return 10 * p;
+}
+function unitFor(f) {
+  for (const [s, u] of [[1e9, "GHz"], [1e6, "MHz"], [1e3, "kHz"]]) if (Math.abs(f) >= s) return [s, u];
+  return [1, "Hz"];
+}
+
+// ------------------------------------------------------------------ state
+const S = {
+  model: null, groups: [], probe: null, dir: "out", solver: "td",
+  resolution: 1e5, floor: -160, data: null, view: null, sweepPts: null, swSel: null, rbw: null, pn: true, swOut: null,
+  busy: false, pending: false, points: [], drag: null,
+  text: "", slidersDirty: false,
+  pos: {}, sel: null, sv: { k: 1, tx: 40, ty: 40 }, undo: [],
+};
+
+// ------------------------------------------------------------------ parameter panel
+function visible(group, p) {
+  if (!p.when) return true;
+  for (const [key, allowed] of Object.entries(p.when)) {
+    const other = group.params.find((q) => q.path === key);
+    if (other && !allowed.includes(other.value)) return false;
+  }
+  return true;
+}
+
+function sliderPos(p) {
+  if (p.kind === "freq" && p.scale === "log") return Math.round(1000 * Math.log(p.value / p.min) / Math.log(p.max / p.min));
+  return p.value;
+}
+function fromSlider(p, v) {
+  if (p.kind === "freq" && p.scale === "log") return p.min * Math.pow(p.max / p.min, v / 1000);
+  return +v;
+}
+function showVal(p) {
+  if (p.kind === "freq") return fmtF(p.value, 7);
+  if (p.kind === "int") return String(p.value);
+  return (+p.value).toFixed(p.step < 0.1 ? 2 : 1) + (p.unit ? " " + p.unit : "");
+}
+
+function touched() {
+  drawSchSoon();   // block summaries follow the sliders
+  if (S.slidersDirty) return;
+  S.slidersDirty = true;
+  refreshEditor();
+}
+
+function buildPanel() {
+  const side = $("params");
+  side.textContent = "";
+  for (const g of S.groups) {
+    const det = document.createElement("details");
+    det.open = true;
+    g._det = det;
+    const sum = document.createElement("summary");
+    sum.innerHTML = `<span></span><span class="type"></span>`;
+    sum.children[0].textContent = g.block;
+    sum.children[1].textContent = g.type;
+    det.appendChild(sum);
+    for (const p of g.params) {
+      const row = document.createElement("div");
+      row.className = "row";
+      p._row = row;
+      const en = document.createElement("input");
+      en.type = "checkbox";
+      en.checked = p.enabled;
+      en.title = p.optional ? "include this parameter" : "";
+      en.style.visibility = p.optional ? "visible" : "hidden";
+      en.addEventListener("change", () => { p.enabled = en.checked; refreshRow(g, p); touched(); simulate(); });
+      const lab = document.createElement("span");
+      lab.className = "lab";
+      lab.textContent = p.label;
+      lab.title = p.label;
+      if (["freq", "number", "int"].includes(p.kind)) {
+        lab.classList.add("limlab");
+        lab.title = p.label + " · click to set the slider's limits";
+        if (p.limits) {
+          const tag = document.createElement("span");
+          tag.className = "limtag";
+          tag.textContent = "limits";
+          lab.appendChild(tag);
+        }
+        lab.addEventListener("click", () => toggleLimits(g, p));
+      }
+      row.append(en, lab);
+      if (p.kind === "pn") {
+        p._box = document.createElement("div");
+        p._box.className = "pnbox";
+        renderPn(g, p);
+      } else if (p.kind === "choice") {
+        const sel = document.createElement("select");
+        for (const c of p.choices) sel.add(new Option(c, c));
+        sel.value = p.value;
+        sel.addEventListener("change", () => { p.value = sel.value; refreshGroup(g); touched(); simulate(); });
+        row.appendChild(sel);
+        p._input = sel;
+      } else if (p.kind === "bool") {
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = !!p.value;
+        cb.style.justifySelf = "end";
+        cb.addEventListener("change", () => { p.value = cb.checked; refreshGroup(g); touched(); simulate(); });
+        row.appendChild(cb);
+        p._input = cb;
+      } else {
+        const val = document.createElement("input");
+        val.type = "text";
+        val.className = "val";
+        const rng = document.createElement("input");
+        rng.type = "range";
+        setRange(p, rng);
+        val.addEventListener("change", () => {
+          const v = p.kind === "freq" ? parseF(val.value) : parseFloat(val.value);
+          if (!isFinite(v)) { val.value = showVal(p); return; }
+          p.value = p.kind === "int" ? Math.max(1, Math.round(v)) : v;
+          if (p.limits || p._inBand) p.value = Math.min(Math.max(p.value, p.min), p.max);   // keep to the limits
+          if (p.value < p.min) p.min = p.kind === "freq" && p.scale === "log" ? p.value / 2 : p.value;
+          if (p.value > p.max) p.max = p.kind === "freq" && p.scale === "log" ? p.value * 2 : p.value;
+          setRange(p, rng);
+          val.value = showVal(p);
+          refreshGroup(g);   // a band edge moves the range of its tone's slider
+          touched();
+          simulate();
+        });
+        rng.addEventListener("input", () => {
+          p.value = fromSlider(p, rng.value);
+          val.value = showVal(p);
+          refreshGroup(g);
+          touched();
+          simulate();
+        });
+        row.append(val, rng);
+        p._input = val;
+        p._range = rng;
+        val.value = showVal(p);
+      }
+      det.appendChild(row);
+      if (p._box) det.appendChild(p._box);
+      refreshRow(g, p);
+    }
+    side.appendChild(det);
+  }
+}
+
+function setRange(p, rng) {
+  if (p.kind === "freq" && p.scale === "log") {
+    rng.min = 0; rng.max = 1000; rng.step = 1;
+  } else if (p.kind === "freq") {
+    const st = p.snap ? S.resolution : (p.max - p.min) / 1000;
+    rng.min = Math.floor(p.min / st) * st; rng.max = Math.ceil(p.max / st) * st; rng.step = st;
+  } else {
+    rng.min = p.min; rng.max = p.max; rng.step = p.step || 1;
+  }
+  rng.value = sliderPos(p);
+}
+
+function bandRange(g, p) {
+  // a tuned or swept tone's slider spans its band; a cw tone gets its original range back
+  const [lo, hi, mode] = p.band.map((path) => g.params.find((q) => q.path === path));
+  if (p._min0 === undefined) { p._min0 = p.min; p._max0 = p.max; }
+  p._inBand = !!(lo && hi && mode && ["tune", "sweep"].includes(mode.value));
+  const [a, b] = p._inBand ? [Math.min(lo.value, hi.value), Math.max(lo.value, hi.value)] : [p._min0, p._max0];
+  if (a === p.min && b === p.max) return;
+  p.min = a; p.max = b;
+  if (p._inBand) p.value = Math.min(Math.max(p.value, a), b);
+  if (p._range) setRange(p, p._range);
+  if (p._input && document.activeElement !== p._input) p._input.value = showVal(p);
+}
+
+function toggleLimits(g, p) {
+  const open = p._row.nextElementSibling;
+  if (open && open.classList.contains("limrow")) { open.remove(); return; }
+  const fmt = (v) => p.kind === "freq" ? fmtF(v, 7) : String(+(+v).toPrecision(6));
+  const parse = (t) => p.kind === "freq" ? parseF(t) : parseFloat(t);
+  const box = document.createElement("div");
+  box.className = "limrow";
+  const lo = document.createElement("input"), hi = document.createElement("input");
+  lo.value = fmt(p.min); hi.value = fmt(p.max);
+  const save = document.createElement("button"), clear = document.createElement("button"), close = document.createElement("button");
+  save.textContent = "Save limits";
+  save.title = "Store these limits in the netlist; the slider keeps to them";
+  clear.textContent = "Clear";
+  close.textContent = "×";
+  close.title = "close";
+  box.append("min", lo, "max", hi, save);
+  if (p.limits) box.append(clear);
+  box.append(close);
+  save.addEventListener("click", () => {
+    const a = parse(lo.value), b = parse(hi.value);
+    if (!(isFinite(a) && isFinite(b) && a < b)) { showMsgs([["err", `limits for ${g.block} ${p.label}: need min < max`]]); return; }
+    schOp({ op: "limits", block: g.block, path: p.path, range: [a, b] }, { layout: false });
+  });
+  clear.addEventListener("click", () => schOp({ op: "limits", block: g.block, path: p.path, range: null }, { layout: false }));
+  close.addEventListener("click", () => box.remove());
+  for (const inp of [lo, hi]) inp.addEventListener("keydown", (e) => { if (e.key === "Enter") save.click(); if (e.key === "Escape") box.remove(); });
+  p._row.after(box);
+  lo.focus();
+}
+
+function muted(g, p) {
+  // a muted tone's other controls are dimmed (they stay editable)
+  return g.params.some((q) => q.mutes && q.value && q !== p && p.path.startsWith(q.mutes));
+}
+
+function renderPn(g, p) {
+  // phase-noise profile: offset / dBc/Hz points, kept sorted by offset
+  const box = p._box;
+  box.textContent = "";
+  const commit = () => {
+    p.value.sort((a, b) => a[0] - b[0]);
+    p.value = p.value.filter((v, i, a) => i === 0 || v[0] > a[i - 1][0]);
+    renderPn(g, p);
+    touched();
+    simulate();
+  };
+  const tbl = document.createElement("div");
+  tbl.className = "pntbl";
+  for (const [t, c] of [["offset", "h"], ["dBc/Hz", "h"], ["", "h"]]) {
+    const h = document.createElement("span"); h.className = c; h.textContent = t; tbl.appendChild(h);
+  }
+  p.value.forEach((pt, i) => {
+    const off = document.createElement("input"), lvl = document.createElement("input"), del = document.createElement("button");
+    off.value = fmtF(pt[0], 4);
+    lvl.value = String(+(+pt[1]).toFixed(1));
+    del.textContent = "×";
+    del.title = "remove this point";
+    del.disabled = p.value.length < 2;
+    off.addEventListener("change", () => { const v = parseF(off.value); if (isFinite(v) && v > 0) pt[0] = v; commit(); });
+    lvl.addEventListener("change", () => { const v = parseFloat(lvl.value); if (isFinite(v)) pt[1] = v; commit(); });
+    del.addEventListener("click", () => { p.value.splice(i, 1); commit(); });
+    tbl.append(off, lvl, del);
+  });
+  const btns = document.createElement("div");
+  btns.className = "pnbtns";
+  const mk = (text, title, fn) => { const b = document.createElement("button"); b.textContent = text; b.title = title; b.addEventListener("click", fn); btns.appendChild(b); };
+  mk("+ point", "add a point a decade further out, 10 dB lower", () => {
+    const last = p.value[p.value.length - 1] || [1e3, -70];
+    p.value.push([last[0] * 10, last[1] - 10]); commit();
+  });
+  mk("−5 dB", "lower the whole profile by 5 dB", () => { p.value.forEach((v) => (v[1] -= 5)); commit(); });
+  mk("+5 dB", "raise the whole profile by 5 dB", () => { p.value.forEach((v) => (v[1] += 5)); commit(); });
+  box.append(tbl, btns);
+}
+
+function refreshRow(g, p) {
+  if (p.band) bandRange(g, p);
+  if (p._box) p._box.style.display = !visible(g, p) || (p.optional && !p.enabled) ? "none" : "";
+  if (p._box) p._box.classList.toggle("off", muted(g, p));
+  p._row.classList.toggle("off", (p.optional && !p.enabled) || muted(g, p));
+  p._row.classList.toggle("hidden", !visible(g, p));
+  if (p._range) p._range.disabled = p.optional && !p.enabled;
+  if (p._input && p.kind !== "choice" && p.kind !== "bool") p._input.disabled = p.optional && !p.enabled;
+}
+function refreshGroup(g) { for (const p of g.params) refreshRow(g, p); }
+
+function collect() {
+  const out = {};
+  for (const g of S.groups) {
+    const kv = {};
+    for (const p of g.params) {
+      const on = (!p.optional || p.enabled) && visible(g, p);
+      kv[p.path] = on ? p.value : null;
+    }
+    out[g.block] = kv;
+  }
+  return out;
+}
+
+function applySnapped(snapped) {
+  for (const [block, kv] of Object.entries(snapped || {})) {
+    const g = S.groups.find((x) => x.block === block);
+    if (!g) continue;
+    for (const [path, f] of Object.entries(kv)) {
+      const p = g.params.find((x) => x.path === path);
+      if (!p || Math.abs(p.value - f) < 1e-6) continue;
+      p.value = f;
+      if (document.activeElement !== p._input) p._input.value = showVal(p);
+      if (p._range && document.activeElement !== p._range) p._range.value = sliderPos(p);
+    }
+  }
+}
+
+// ------------------------------------------------------------------ simulation loop
+function request() {
+  return {
+    params: collect(), probe: S.probe, incident: S.dir === "in", solver: S.solver,
+    resolution: S.resolution, sweep_points: S.sweepPts, rbw: S.rbw, phase_noise: S.pn,
+    sweep_out: S.swOut && { anchor: S.swSel, fmin: S.swOut[0], fmax: S.swOut[1], points: S.sweepPts },
+    // with an RBW, lines below the floor can still add up inside it: ask for them too
+    min_dbm: S.rbw ? S.floor - Math.max(0, 10 * Math.log10(S.rbw / S.resolution)) - 10 : S.floor,
+  };
+}
+
+async function simulate() {
+  if (S.busy) { S.pending = true; return; }
+  S.busy = true;
+  $("status").classList.add("busy");
+  try {
+    const r = await fetch("api/sim", { method: "POST", body: JSON.stringify(request()) });
+    const d = await r.json();
+    if (d.error) {
+      showMsgs([["err", d.error]]);
+    } else {
+      S.data = d;
+      $("swctl").style.display = d.sweep ? "" : "none";
+      $("pnlab").style.display = d.has_pn ? "" : "none";
+      fillSwPick();
+      applySnapped(d.snapped);
+      const msgs = [];
+      if (d.warnings) for (const w of d.warnings.split("\n")) msgs.push(["warn", w]);
+      if (d.sweep && d.sweep.note) msgs.push(["", d.sweep.note]);
+      if (S.rbw && S.solver !== "tone" && S.rbw < (d.resolution || S.resolution)) {
+        msgs.push(["", `RBW ${fmtF(S.rbw, 3)} is narrower than the FFT resolution (${fmtF(d.resolution || S.resolution, 3)}): ` +
+          "noise exists only as separate bins, each holding a whole bin's power, so it shows as peaks. " +
+          "Set Resolution to the RBW or finer, or use the tone solver, for a continuous noise trace."]);
+      }
+      showMsgs(msgs);
+      $("status").textContent = (d.plan ? d.plan.replace(/ \(products.*\)/, "") + " · " : "tone solver · ") + d.elapsed_ms + " ms";
+      draw();
+    }
+  } catch (e) {
+    showMsgs([["err", "viewer server not reachable: " + e]]);
+  } finally {
+    S.busy = false;
+    $("status").classList.remove("busy");
+    if (S.pending) { S.pending = false; simulate(); }
+  }
+}
+
+function showMsgs(list) {
+  const m = $("msgs");
+  m.textContent = "";
+  for (const [cls, text] of list) {
+    const div = document.createElement("div");
+    div.className = cls;
+    div.textContent = text;
+    m.appendChild(div);
+  }
+}
+
+// ------------------------------------------------------------------ plotting
+const PAD = { l: 58, r: 16, t: 14, b: 36 };
+
+function setupCanvas(cv) {
+  const dpr = window.devicePixelRatio || 1;
+  const w = cv.clientWidth, h = cv.clientHeight;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
+    cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
+  }
+  const ctx = cv.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return [ctx, w, h];
+}
+
+function series() {
+  // returns {stems: [{f,p,labels}], marks: [{f,p,labels}]} for the current solver
+  const d = S.data;
+  if (!d) return { stems: [], marks: [] };
+  const tone = (d.tone || []).map((t) => ({ f: t.f, p: t.p, labels: [t.label], fund: t.fund }));
+  if (S.solver === "tone" || !d.td) return { stems: tone, marks: [] };
+  const td = d.td.f.map((f, i) => ({ f, p: d.td.p[i], labels: d.td.labels[i], fund: d.td.fund && d.td.fund[i] }));
+  if (S.solver === "td") return { stems: td, marks: [] };
+  // tone overlay: power sum per TD bin, like the CLI comparison
+  const res = d.resolution || S.resolution;
+  const bins = new Map();
+  for (const t of d.tone || []) {
+    const k = Math.round(t.f / res);
+    const e = bins.get(k) || { f: k * res, mw: 0, labels: [] };
+    e.mw += Math.pow(10, t.p / 10);
+    e.labels.push(t.label);
+    bins.set(k, e);
+  }
+  const marks = [...bins.values()].map((e) => ({ f: e.f, p: 10 * Math.log10(e.mw), labels: e.labels }));
+  return { stems: td, marks };
+}
+
+function pnAt(prof, off) {
+  // SSB phase noise (dBc/Hz) at an offset, log-interpolated; null outside the profile
+  if (off < prof[0][0] || off > prof[prof.length - 1][0]) return null;
+  if (prof.length === 1) return prof[0][1];
+  for (let i = 1; i < prof.length; i++) {
+    if (off <= prof[i][0]) {
+      const [f0, l0] = prof[i - 1], [f1, l1] = prof[i];
+      return l0 + (l1 - l0) * Math.log10(off / f0) / Math.log10(f1 / f0);
+    }
+  }
+  return null;
+}
+
+function rbwTrace(x0, x1, n, lines, rbw) {
+  // Swept-analyser view: each line through a Gaussian RBW (-3 dB at +-rbw/2) with a peak
+  // detector per display point (so a line narrower than a point is not missed), plus the
+  // tone solver's phase-noise skirts as density x noise bandwidth. Summed in mW.
+  const mw = new Float64Array(n), df = (x1 - x0) / n, k = (4 * Math.LN2) / (rbw * rbw);
+  for (const s of lines) {
+    const m = Math.pow(10, s.p / 10), reach = 3.5 * rbw;
+    const a = Math.max(0, Math.floor((s.f - reach - x0) / df)), b = Math.min(n - 1, Math.floor((s.f + reach - x0) / df));
+    for (let i = a; i <= b; i++) {
+      const fa = x0 + i * df, fb = fa + df, d = s.f < fa ? fa - s.f : s.f > fb ? s.f - fb : 0;
+      mw[i] += m * Math.exp(-k * d * d);
+    }
+  }
+  const sk = (S.solver === "tone" && S.data.skirts) || [], bn = 1.0645 * rbw;
+  for (const s of sk) {
+    const prof = S.data.pn[s.src], g = 20 * Math.log10(s.m);
+    const lo = s.off[0], hi = s.off[s.off.length - 1];
+    const a = Math.max(0, Math.floor((s.f0 + lo - x0) / df)), b = Math.min(n - 1, Math.ceil((s.f0 + hi - x0) / df));
+    let j = 0;
+    for (let i = a; i <= b; i++) {
+      const o = x0 + (i + 0.5) * df - s.f0;
+      while (j < s.off.length - 2 && s.off[j + 1] < o) j++;
+      const oa = s.off[j], ob = s.off[j + 1];
+      if (o < oa || o > ob || oa * ob <= 0 && Math.abs(o) < Math.min(Math.abs(oa), Math.abs(ob))) continue;
+      const L = pnAt(prof, Math.abs(o) / s.m);
+      if (L === null) continue;
+      const lvl = s.lvl[j] + (s.lvl[j + 1] - s.lvl[j]) * (o - oa) / (ob - oa);
+      mw[i] += Math.pow(10, (lvl + L + g) / 10) * bn;
+    }
+  }
+  return Array.from(mw, (v) => (v > 0 ? 10 * Math.log10(v) : -400));
+}
+
+function sweepTracks() {
+  const sw = S.data && S.data.sweep;
+  if (!sw || !$("swshow").checked) return [];
+  const m = $("swinterp").value.match(/^(lin|pchip)(\d+)$/);
+  return m ? sw.products.map((pr) => interpTrack(pr, +m[2], m[1] === "pchip")) : sw.products;
+}
+
+function setSwSel(label) {
+  S.swSel = label || null;
+  $("swpick").value = S.swSel || "";
+  if (S.swOut) simulate();   // the selected track anchors the output grid
+  else drawFFT();
+}
+
+function setSwOut(range) {
+  S.swOut = range;
+  $("swplace").value = range ? "out" : "band";
+  $("swoutbox").style.display = range ? "" : "none";
+  if (range) { $("swfrom").value = fmtF(range[0], 6); $("swto").value = fmtF(range[1], 6); }
+  simulate();
+}
+
+function fillSwPick() {
+  // product list, strongest worst case first; rebuilt only when the set of products changes
+  const sw = S.data && S.data.sweep, sel = $("swpick");
+  if (!sw) return;
+  const worst = (pr) => Math.max(...pr.p.filter((v) => v !== null));
+  const labels = sw.products.map((pr) => [pr.label, worst(pr)]).sort((a, b) => b[1] - a[1]);
+  if (S.swSel && !labels.some(([l]) => l === S.swSel)) labels.push([S.swSel, null]);
+  const key = labels.map(([l]) => l).join("|");
+  if (sel.dataset.key !== key) {
+    sel.dataset.key = key;
+    while (sel.options.length > 1) sel.remove(1);
+    for (const [l, w] of labels) sel.add(new Option(w === null ? `${l} (not present)` : `${l}  ${w.toFixed(1)} dBm`, l));
+  }
+  sel.value = S.swSel || "";
+}
+
+function interpTrack(pr, k, smooth) {
+  // k points per step interval. A product's frequency is linear in the swept frequencies, so it
+  // interpolates exactly; its level is estimated (linear, or monotone cubic: no overshoot).
+  // Runs are not joined across steps where the product is absent.
+  const f = [], p = [], at = [];
+  const n = pr.f.length;
+  let a = 0;
+  while (a < n) {
+    if (pr.f[a] === null) { a++; continue; }
+    let b = a;
+    while (b + 1 < n && pr.f[b + 1] !== null) b++;
+    const d = [];   // secant slopes, then Fritsch-Butland tangents for equal spacing
+    for (let i = a; i < b; i++) d.push(pr.p[i + 1] - pr.p[i]);
+    const m = [];
+    for (let i = a; i <= b; i++) {
+      const j = i - a, dl = d[j - 1], dr = d[j];
+      if (dl === undefined) m.push(dr === undefined ? 0 : dr);
+      else if (dr === undefined) m.push(dl);
+      else m.push(dl * dr <= 0 ? 0 : (2 * dl * dr) / (dl + dr));
+    }
+    for (let i = a; i <= b; i++) {
+      const steps = i < b ? k : 1;
+      for (let s = 0; s < steps; s++) {
+        const t = s / k, j = i - a;
+        f.push(s ? pr.f[i] + (pr.f[i + 1] - pr.f[i]) * t : pr.f[i]);
+        if (!s) p.push(pr.p[i]);
+        else if (!smooth) p.push(pr.p[i] + (pr.p[i + 1] - pr.p[i]) * t);
+        else {
+          const t2 = t * t, t3 = t2 * t;
+          p.push((2 * t3 - 3 * t2 + 1) * pr.p[i] + (t3 - 2 * t2 + t) * m[j] +
+                 (-2 * t3 + 3 * t2) * pr.p[i + 1] + (t3 - t2) * m[j + 1]);
+        }
+        at.push(i + t);
+      }
+    }
+    if (b + 1 < n) { f.push(null); p.push(null); at.push(null); }   // keep the gap
+    a = b + 1;
+  }
+  return { label: pr.label, f, p, at, src: pr };
+}
+
+function stepAt(x) {
+  // tone frequencies at a (possibly fractional) step: they move linearly between steps
+  const steps = S.data.sweep.steps, i = Math.min(Math.floor(x), steps.length - 1), t = x - i;
+  const a = steps[i], b = steps[Math.min(i + 1, steps.length - 1)];
+  return Object.fromEntries(Object.keys(a).map((k) => [k, a[k] + (b[k] - a[k]) * t]));
+}
+
+function xRange(stems) {
+  if (S.view) return S.view;
+  let hi = 0;
+  for (const s of stems) if (s.p >= S.floor) hi = Math.max(hi, s.f);
+  for (const pr of sweepTracks()) pr.f.forEach((f, i) => { if (f !== null && pr.p[i] >= S.floor) hi = Math.max(hi, f); });
+  return [0, (hi || 1e6) * 1.05];
+}
+
+function draw() {
+  drawFFT();
+  drawWave();
+}
+
+function drawFFT() {
+  const cv = $("fft");
+  const [ctx, w, h] = setupCanvas(cv);
+  const { stems, marks } = series();
+  const [x0, x1] = xRange(stems);
+  const inView = stems.filter((s) => s.f >= x0 && s.f <= x1);
+  let top = -Infinity;
+  for (const s of inView.concat(marks.filter((m) => m.f >= x0 && m.f <= x1))) top = Math.max(top, s.p);
+  const tracks = sweepTracks();
+  for (const pr of tracks) pr.f.forEach((f, i) => { if (f !== null && f >= x0 && f <= x1) top = Math.max(top, pr.p[i]); });
+  if (!isFinite(top)) top = 0;
+  const anyFund = inView.some((s) => s.fund) || tracks.some((pr) => (pr.src || pr).fund);
+  const c1 = css("--series-1"), c3 = css("--series-3");
+  const items = [[c1, S.solver === "tone" ? "tone solver" : "time domain (FFT bin)", "dot"]];
+  if (S.rbw) {
+    const pn = S.pn && S.data && S.data.has_pn ? ", phase noise" : "";
+    items.unshift([css("--text-primary"), `RBW ${fmtF(S.rbw, 3)} trace (Gaussian, peak detector${pn})`, "line"]);
+  }
+  if (anyFund) items.push([css("--series-2"), "fundamental mixer products", "dot"]);
+  if (marks.length) items.push([css("--text-muted"), "tone solver, power sum per bin", "ring"]);
+  if (tracks.length) {
+    const ip = $("swinterp").selectedOptions[0];
+    const extra = ip.value === "0" ? "" : `, ${ip.textContent} between`;
+    const only = S.swSel ? ` · showing ${S.swSel} (Esc: all)` : "";
+    const anc = S.swOut && S.data.sweep.anchor ? `, on a ${fmtF(S.swOut[0], 4)} – ${fmtF(S.swOut[1], 4)} grid for ${S.data.sweep.anchor}` : "";
+    items.push([c3, `band sweep, ${S.data.sweep.steps.length} steps${anc}${extra} (tone solver; □ worst computed)${only}`, "line"]);
+  }
+  ctx.font = "11px system-ui, sans-serif";
+  const legend = [];   // [x, line, item]: wrapped to the plot width
+  let lx = PAD.l + 10, line = 0;
+  for (const it of items) {
+    const wd = ctx.measureText(it[1]).width + 30;
+    if (lx > PAD.l + 10 && lx + wd - 20 > w - PAD.r) { lx = PAD.l + 10; line++; }
+    legend.push([lx, line, it]);
+    lx += wd;
+  }
+  PAD.t = 14 + 15 * (line + 1);
+  const y1 = Math.ceil((top + 8) / 10) * 10, y0 = S.floor;
+  const pw = w - PAD.l - PAD.r, ph = h - PAD.t - PAD.b;
+  const X = (f) => PAD.l + ((f - x0) / (x1 - x0)) * pw;
+  const Y = (p) => PAD.t + ((y1 - Math.max(p, y0)) / (y1 - y0)) * ph;
+
+  // grid + axes
+  ctx.font = "11px system-ui, sans-serif";
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = css("--grid");
+  ctx.fillStyle = css("--text-muted");
+  const ystep = niceStep(y1 - y0, ph / 40);
+  ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  for (let v = Math.ceil(y0 / ystep) * ystep; v <= y1; v += ystep) {
+    ctx.beginPath(); ctx.moveTo(PAD.l, Y(v) + 0.5); ctx.lineTo(w - PAD.r, Y(v) + 0.5); ctx.stroke();
+    ctx.fillText(String(Math.round(v)), PAD.l - 6, Y(v));
+  }
+  const [us, uu] = unitFor(x1);
+  const xstep = niceStep(x1 - x0, pw / 90);
+  ctx.textAlign = "center"; ctx.textBaseline = "top";
+  for (let v = Math.ceil(x0 / xstep) * xstep; v <= x1 + 1e-9; v += xstep) {
+    ctx.beginPath(); ctx.moveTo(X(v) + 0.5, PAD.t); ctx.lineTo(X(v) + 0.5, h - PAD.b); ctx.stroke();
+    ctx.fillText(String(+(v / us).toPrecision(8)), X(v), h - PAD.b + 5);
+  }
+  ctx.fillStyle = css("--text-secondary");
+  ctx.fillText(`frequency (${uu})`, PAD.l + pw / 2, h - 16);
+  ctx.save();
+  ctx.translate(14, PAD.t + ph / 2); ctx.rotate(-Math.PI / 2);
+  ctx.textBaseline = "middle";
+  ctx.fillText(S.rbw ? `power in ${fmtF(S.rbw, 3)} RBW (dBm)` : S.solver === "tone" ? "power (dBm)" : "power per bin (dBm)", 0, 0);
+  ctx.restore();
+
+  ctx.save();
+  ctx.beginPath(); ctx.rect(PAD.l, PAD.t, pw, ph); ctx.clip();
+  S.points = [];
+  // band sweep: each product's path while the swept tones step across their bands
+  if (tracks.length) {
+    const sw = S.data.sweep;
+    const sel = S.swSel;   // one track picked: the rest are dimmed
+    const cfund = css("--series-2");
+    for (const pr of [...tracks].sort((a, b) => !!(a.src || a).fund - !!(b.src || b).fund)) {   // fundamentals on top
+      const mine = !sel || pr.label === sel;
+      ctx.strokeStyle = (pr.src || pr).fund ? cfund : c3;
+      ctx.globalAlpha = mine ? (sel ? 1 : 0.75) : 0.12;
+      ctx.lineWidth = sel && mine ? 2.5 : 1.5;
+      ctx.beginPath();
+      let pen = false;
+      for (let i = 0; i < pr.f.length; i++) {
+        if (pr.f[i] === null) { pen = false; continue; }
+        const x = X(pr.f[i]), y = Y(pr.p[i]);
+        if (pen) ctx.lineTo(x, y); else ctx.moveTo(x, y);
+        pen = true;
+        if (pr.f[i] >= x0 && pr.f[i] <= x1 && pr.p[i] >= y0) {
+          const at = pr.at ? pr.at[i] : i;
+          S.points.push({ x, y, s: { f: pr.f[i], p: pr.p[i], labels: [pr.label] }, kind: "sweep", at, pr: pr.src || pr });
+        }
+      }
+      ctx.stroke();
+      if (!mine) continue;
+      const src = pr.src || pr;   // worst case over the band: computed steps only
+      let best = -1;
+      src.p.forEach((v, i) => { if (v !== null && (best < 0 || v > src.p[best])) best = i; });
+      if (best >= 0 && src.p[best] >= y0) {
+        const x = X(src.f[best]), y = Y(src.p[best]);
+        ctx.strokeRect(x - 3, y - 3, 6, 6);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+  // stems
+  const cf = css("--series-2"), surf = css("--surface-1");
+  if (S.rbw) ctx.globalAlpha = 0.25;   // the RBW trace is the reading; stems stay for hover
+  for (const fundPass of [false, true]) {
+    const col = fundPass ? cf : c1, pass = inView.filter((s) => !!s.fund === fundPass && s.p >= y0);
+    ctx.strokeStyle = col; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (const s of pass) {
+      const x = Math.round(X(s.f)) + 0.5;
+      ctx.moveTo(x, Y(y0)); ctx.lineTo(x, Y(s.p));
+    }
+    ctx.stroke();
+    ctx.fillStyle = col; ctx.strokeStyle = surf; ctx.lineWidth = 1.5;
+    for (const s of pass) {
+      const x = X(s.f), y = Y(s.p);
+      ctx.beginPath(); ctx.arc(x, y, fundPass ? 4.5 : 3.5, 0, 2 * Math.PI); ctx.fill(); ctx.stroke();
+      S.points.push({ x, y, s, kind: S.solver === "tone" ? "tone" : "td" });
+    }
+  }
+  ctx.globalAlpha = 1;
+  if (S.rbw && S.data) {
+    const n = Math.max(200, Math.round(pw)), tr = rbwTrace(x0, x1, n, stems, S.rbw);
+    ctx.strokeStyle = css("--text-primary"); ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    tr.forEach((v, i) => { const x = PAD.l + ((i + 0.5) / n) * pw, y = Y(v); if (i) ctx.lineTo(x, y); else ctx.moveTo(x, y); });
+    ctx.stroke();
+  }
+  // tone overlay (shape, not hue, sets it apart)
+  if (marks.length) {
+    ctx.strokeStyle = css("--text-muted"); ctx.lineWidth = 1.5;
+    for (const m of marks) {
+      if (m.f < x0 || m.f > x1 || m.p < y0) continue;
+      const x = X(m.f), y = Y(m.p);
+      ctx.beginPath(); ctx.arc(x, y, 6, 0, 2 * Math.PI); ctx.stroke();
+      S.points.push({ x, y, s: m, kind: "tone" });
+    }
+  }
+  // labels on the strongest stems
+  ctx.fillStyle = css("--text-primary");
+  ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+  const placed = [];
+  for (const s of [...inView].sort((a, b) => b.p - a.p).slice(0, 8)) {
+    if (s.p < y0 || !s.labels || !s.labels.length) continue;
+    const text = s.labels[0] + (s.labels.length > 1 ? " +" : "");
+    let x = X(s.f) + 5, y = Y(s.p) - 4;
+    for (const q of placed) if (Math.abs(q.x - x) < 120 && Math.abs(q.y - y) < 13) y = q.y - 13;
+    placed.push({ x, y });
+    ctx.fillText(text, x, y);
+  }
+  // drag-zoom selection
+  if (S.drag && S.drag.x1 !== undefined) {
+    ctx.fillStyle = css("--select");
+    const a = Math.min(S.drag.x0, S.drag.x1), b = Math.max(S.drag.x0, S.drag.x1);
+    ctx.fillRect(a, PAD.t, b - a, ph);
+  }
+  ctx.restore();
+  // legend, in the band above the plot
+  ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.font = "11px system-ui, sans-serif";
+  for (const [x, ln, [col, text, shape]] of legend) {
+    const y = 12 + 15 * ln;
+    ctx.beginPath();
+    if (shape === "dot") { ctx.fillStyle = col; ctx.arc(x, y, 3.5, 0, 2 * Math.PI); ctx.fill(); }
+    else if (shape === "line") { ctx.strokeStyle = col; ctx.lineWidth = 2; ctx.moveTo(x - 6, y); ctx.lineTo(x + 6, y); ctx.stroke(); }
+    else { ctx.strokeStyle = col; ctx.lineWidth = 1.5; ctx.arc(x, y, 5, 0, 2 * Math.PI); ctx.stroke(); }
+    ctx.fillStyle = css("--text-secondary");
+    ctx.fillText(text, x + 9, y);
+  }
+  S.geom = { x0, x1, X, pw, w, h };
+}
+
+function drawWave() {
+  const cv = $("wave");
+  const [ctx, w, h] = setupCanvas(cv);
+  const d = S.data;
+  ctx.font = "11px system-ui, sans-serif";
+  if (!d || !d.waveform) {
+    ctx.fillStyle = css("--text-muted"); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+    ctx.fillText(S.solver === "tone" ? "waveform needs the time-domain solver" : "", w / 2, h / 2);
+    return;
+  }
+  const wf = d.waveform, n = wf.min.length;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < n; i++) { lo = Math.min(lo, wf.min[i]); hi = Math.max(hi, wf.max[i]); }
+  if (!(hi > lo)) { hi = 1e-9; lo = -1e-9; }
+  const m = Math.max(Math.abs(lo), Math.abs(hi)) * 1.1;
+  const pad = { l: PAD.l, r: PAD.r, t: 10, b: 24 };
+  const pw = w - pad.l - pad.r, ph = h - pad.t - pad.b;
+  const X = (i) => pad.l + (i / Math.max(n - 1, 1)) * pw;
+  const Y = (v) => pad.t + ((m - v) / (2 * m)) * ph;
+  ctx.strokeStyle = css("--grid"); ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(pad.l, Y(0) + 0.5); ctx.lineTo(w - pad.r, Y(0) + 0.5); ctx.stroke();
+  ctx.fillStyle = css("--text-muted"); ctx.textAlign = "right"; ctx.textBaseline = "middle";
+  const [vs, vu] = m >= 1 ? [1, "V"] : m >= 1e-3 ? [1e-3, "mV"] : [1e-6, "µV"];
+  ctx.fillText((m / 1.1 / vs).toPrecision(3) + " " + vu, pad.l - 6, Y(m / 1.1));
+  ctx.fillText((-m / 1.1 / vs).toPrecision(3), pad.l - 6, Y(-m / 1.1));
+  ctx.textAlign = "left"; ctx.textBaseline = "top";
+  ctx.fillText("0", pad.l, h - pad.b + 5);
+  ctx.textAlign = "right";
+  ctx.fillText(fmtT(wf.span) + " (one period of the record)", w - pad.r, h - pad.b + 5);
+  ctx.strokeStyle = css("--series-1"); ctx.lineWidth = 1.2;
+  ctx.beginPath();
+  if (wf.min === wf.max || wf.min.every((v, i) => v === wf.max[i])) {
+    for (let i = 0; i < n; i++) (i ? ctx.lineTo : ctx.moveTo).call(ctx, X(i), Y(wf.max[i]));
+  } else {
+    for (let i = 0; i < n; i++) { const x = Math.round(X(i)) + 0.5; ctx.moveTo(x, Y(wf.max[i])); ctx.lineTo(x, Y(wf.min[i]) + 0.5); }
+  }
+  ctx.stroke();
+}
+
+// ------------------------------------------------------------------ interaction
+function nearest(mx, my) {
+  let best = null, bd = 12 * 12;
+  for (const p of S.points) {
+    const d = (p.x - mx) ** 2 + (p.y - my) ** 2;
+    if (d < bd) { bd = d; best = p; }
+  }
+  return best;
+}
+
+function hookPlot() {
+  const cv = $("fft"), tip = $("tip");
+  const pos = (e) => { const r = cv.getBoundingClientRect(); return [e.clientX - r.left, e.clientY - r.top]; };
+  cv.addEventListener("mousemove", (e) => {
+    const [mx, my] = pos(e);
+    if (S.drag) { S.drag.x1 = mx; drawFFT(); tip.style.display = "none"; return; }
+    const p = nearest(mx, my);
+    if (!p) { tip.style.display = "none"; return; }
+    const head = `${fmtF(p.s.f, 9)} · ${p.s.p.toFixed(2)} dBm`;
+    const who = p.kind === "td" ? "time-domain bin" : p.kind === "sweep"
+      ? (Number.isInteger(p.at) ? `band sweep, step ${p.at + 1}/${S.data.sweep.steps.length}: `
+                                : `band sweep, interpolated (level estimated) near step ${(p.at + 1).toFixed(2)}: `) +
+        Object.entries(stepAt(p.at)).map(([k, f]) => `${k} ${fmtF(f, 7)}`).join(", ")
+      : "tone solver";
+    const labels = (p.s.labels || []).slice(0, 6);
+    tip.innerHTML = "";
+    const a = document.createElement("div"); a.className = "t1"; a.textContent = head;
+    const b = document.createElement("div"); b.className = "t2"; b.textContent = who;
+    tip.append(a, b);
+    for (const l of labels) { const c = document.createElement("div"); c.textContent = l; tip.appendChild(c); }
+    if (p.s.fund || (p.pr && p.pr.fund)) { const c = document.createElement("div"); c.className = "t2"; c.textContent = "fundamental mixer product"; tip.appendChild(c); }
+    if (p.kind === "td" && !labels.length) { const c = document.createElement("div"); c.className = "t2"; c.textContent = "(not predicted by the tone solver)"; tip.appendChild(c); }
+    if (p.kind === "sweep") {
+      const ps = p.pr.p.filter((v) => v !== null), fs = p.pr.f.filter((v) => v !== null);
+      const c = document.createElement("div"); c.className = "t2";
+      c.textContent = `worst ${Math.max(...ps).toFixed(2)} dBm · spans ${fmtF(Math.min(...fs), 6)} – ${fmtF(Math.max(...fs), 6)}`;
+      tip.appendChild(c);
+    }
+    tip.style.display = "block";
+    const tx = Math.min(e.clientX + 14, window.innerWidth - tip.offsetWidth - 8);
+    tip.style.left = tx + "px"; tip.style.top = (e.clientY + 14) + "px";
+  });
+  cv.addEventListener("mouseleave", () => { tip.style.display = "none"; });
+  cv.addEventListener("mousedown", (e) => { const [mx, my] = pos(e); S.drag = { x0: mx, y0: my }; });
+  window.addEventListener("mouseup", () => {
+    if (!S.drag) return;
+    const d = S.drag; S.drag = null;
+    if (d.x1 !== undefined && Math.abs(d.x1 - d.x0) > 5 && S.geom) {
+      const g = S.geom;
+      const f = (x) => g.x0 + ((x - PAD.l) / g.pw) * (g.x1 - g.x0);
+      const a = Math.max(0, f(Math.min(d.x0, d.x1))), b = f(Math.max(d.x0, d.x1));
+      if (b > a) S.view = [a, b];
+    } else {   // a click: on a sweep track, show only that one (click it again for all)
+      const p = nearest(d.x0, d.y0);
+      if (p && p.kind === "sweep") { setSwSel(p.pr.label === S.swSel ? null : p.pr.label); return; }
+    }
+    drawFFT();
+  });
+  cv.addEventListener("dblclick", () => { S.view = null; drawFFT(); });
+  cv.addEventListener("wheel", (e) => {
+    if (!S.geom) return;
+    e.preventDefault();
+    const g = S.geom, [mx] = pos(e);
+    const fc = g.x0 + ((mx - PAD.l) / g.pw) * (g.x1 - g.x0);
+    const k = e.deltaY > 0 ? 1.25 : 0.8;
+    const a = Math.max(0, fc - (fc - g.x0) * k), b = fc + (g.x1 - fc) * k;
+    S.view = [a, b];
+    drawFFT();
+  }, { passive: false });
+}
+
+// ------------------------------------------------------------------ schematic
+// Blocks sit on a world grid (netlist `layout`, x/y of the top-left corner); the view maps
+// world -> screen as screen = world * k + t. Every edit goes to the server, which patches the
+// netlist text and returns the rebuilt model.
+const BW = 64, BH = 48, GRID = 20;
+let SD = null;   // drag in progress: {mode: "move" | "wire" | "pan", ...}
+
+const esc = (t) => String(t).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const snap = (v) => Math.round(v / GRID) * GRID;
+
+function portLayout(b) {
+  // inputs left, outputs right, LO on top; returns {port: {x, y, dx, dy}} relative to the block
+  const left = [], right = [], top = [];
+  for (const p of b.ports) {
+    if (p === "lo") top.push(p);
+    else if (["out", "if", "a", "b"].includes(p)) right.push(p);
+    else if (["in", "rf", "sum"].includes(p)) left.push(p);
+    else (left.length <= right.length ? left : right).push(p);
+  }
+  const out = {};
+  left.forEach((p, i) => { out[p] = { x: 0, y: (BH * (i + 1)) / (left.length + 1), dx: -1, dy: 0 }; });
+  right.forEach((p, i) => { out[p] = { x: BW, y: (BH * (i + 1)) / (right.length + 1), dx: 1, dy: 0 }; });
+  top.forEach((p, i) => { out[p] = { x: (BW * (i + 1)) / (top.length + 1), y: 0, dx: 0, dy: -1 }; });
+  return out;
+}
+
+function paramOf(name, path) {
+  const g = S.groups.find((x) => x.block === name);
+  const p = g && g.params.find((q) => q.path === path);
+  return p && (!p.optional || p.enabled) && visible(g, p) ? p.value : null;
+}
+
+function symbol(b) {
+  // body outline + glyph, and how far the body sits in from each side (for the port leads)
+  const tilde = (y) => `M20 ${y} q4 -6 8 0 t8 0 t8 0`;
+  const strike = (y) => `M28 ${y + 5} L36 ${y - 5}`;
+  const box = `<rect class="blk-body" x="10" y="4" width="44" height="40" rx="3"/>`;
+  const boxed = { l: 10, r: 10, t: 4 };
+  switch (b.type) {
+    case "amplifier": return { inset: { l: 14, r: 12, t: 0 }, svg: `<path class="blk-body" d="M14 6 L52 24 L14 42 Z"/>` };
+    case "mixer": return { inset: { l: 15, r: 15, t: 7 }, svg: `<circle class="blk-body" cx="32" cy="24" r="17"/><path class="sym" d="M20 12 L44 36 M44 12 L20 36"/>` };
+    case "source": return { inset: { l: 10, r: 22, t: 8 }, svg: `<circle class="blk-body" cx="26" cy="24" r="16"/><path class="sym" d="M16 24 q5 -10 10 0 t10 0"/>` };
+    case "filter": case "ideal_filter": {
+      const r = b.type === "ideal_filter" ? "bandpass" : paramOf(b.name, "response") || "bandpass";
+      const st = { lowpass: [14], highpass: [34], bandpass: [14, 34], bandstop: [24] }[r] || [];
+      return { inset: boxed, svg: box + `<path class="sym" d="${tilde(14)} ${tilde(24)} ${tilde(34)} ${st.map(strike).join(" ")}"/>` };
+    }
+    case "attenuator": return { inset: boxed, svg: box + `<path class="sym" d="M14 24 h4 l3 -7 l5 14 l5 -14 l5 14 l5 -14 l3 7 h4"/>` };
+    case "splitter": return { inset: boxed, svg: box + `<path class="sym" d="M10 24 H26 L54 16 M26 24 L54 32"/>` };
+    case "load": return { inset: { l: 12, r: 12, t: 8 }, svg: `<rect class="blk-body" x="12" y="8" width="40" height="32" rx="3"/><text class="symt" x="32" y="28">50 Ω</text>` };
+    case "sparam": return { inset: boxed, svg: box + `<text class="symt" x="32" y="28">S21</text>` };
+    default: return { inset: boxed, svg: box + `<text class="symt" x="32" y="28">${esc(b.type)}</text>` };
+  }
+}
+
+function summary(b) {
+  const n = (v) => (+(+v).toFixed(1)).toString();
+  const f = (v) => fmtF(v, 4);
+  const range = (lo, hi) => {   // "88–108 MHz": one unit when both ends share it
+    const [sc, u] = unitFor(hi);
+    return Math.abs(lo) >= sc ? `${+(lo / sc).toPrecision(4)}–${+(hi / sc).toPrecision(4)} ${u}` : `${f(lo)} – ${f(hi)}`;
+  };
+  const v = (path) => paramOf(b.name, path);
+  switch (b.type) {
+    case "amplifier": return v("gain_db") === null ? "" : n(v("gain_db")) + " dB";
+    case "attenuator": return v("loss_db") === null ? "" : n(v("loss_db")) + " dB";
+    case "mixer": return v("conversion_loss_db") === null ? "" : "CL " + n(v("conversion_loss_db")) + " dB";
+    case "ideal_filter": return v("fmin") !== null && v("fmax") !== null ? range(v("fmin"), v("fmax"))
+      : [v("fmin"), v("fmax")].map((x) => x === null ? "…" : f(x)).join(" – ");
+    case "filter": {
+      const r = v("response");
+      if (r === "lowpass" || r === "highpass") return (r === "lowpass" ? "LP " : "HP ") + f(v("fc"));
+      const tag = r === "bandstop" ? "BS " : "BP ";
+      if (v("f1") !== null && v("f2") !== null) return tag + range(v("f1"), v("f2"));
+      return v("f0") === null ? tag : tag + f(v("f0")) + " / " + f(v("bw"));
+    }
+    case "source": {
+      const g = S.groups.find((x) => x.block === b.name);
+      const tones = g ? g.params.filter((p) => /^tones\.\d+\.freq$/.test(p.path)) : [];
+      if (!tones.length) return "";
+      const tag = tones[0].label.replace(/ freq$/, ""), mode = v("tones.0.mode");
+      if (tones.length === 1 && v("tones.0.mute")) return `${tag} muted`;
+      const first = mode && mode !== "cw"
+        ? `${tag} ${range(v("tones.0.band.0"), v("tones.0.band.1"))} ${mode}${v("tones.0.spacing") === "log" ? " log" : ""}`
+        : `${tag} ${f(tones[0].value)}`;
+      return tones.length > 1 ? `${first} +${tones.length - 1}` : first;   // full list: the parameter panel
+    }
+    default: return "";
+  }
+}
+
+function autoLayout(sc) {
+  // columns follow the signal (longest path from the sources); a branch that drives a mixer's
+  // LO port sits one row above that mixer, ending one column before it
+  const names = sc.blocks.map((b) => b.name);
+  const side = {}, succ = {}, pred = {}, edges = [], feeds = {};
+  for (const b of sc.blocks) {
+    const pl = portLayout(b);
+    for (const p of b.ports) side[b.name + "." + p] = pl[p];
+    succ[b.name] = []; pred[b.name] = [];
+  }
+  for (const [a, b] of sc.wires) {
+    const pa = side[a], pb = side[b];
+    if (!pa || !pb) continue;
+    const [u, v] = pa.dx > 0 && pb.dx <= 0 ? [a, b] : pb.dx > 0 && pa.dx <= 0 ? [b, a] : [null, null];
+    if (!u) continue;
+    const bu = u.split(".")[0], bv = v.split(".")[0];
+    if (bu === bv) continue;
+    succ[bu].push(bv); pred[bv].push(bu);
+    if (v.endsWith(".lo")) feeds[bu] = bv; else edges.push([bu, bv]);
+  }
+  const col = Object.fromEntries(names.map((n) => [n, 0]));
+  for (let it = 0; it < names.length; it++) for (const [u, v] of edges) col[v] = Math.max(col[v], col[u] + 1);
+  const loBranch = new Set();
+  for (const [u, mix] of Object.entries(feeds)) {
+    const shift = col[mix] - 1 - col[u];
+    const stack = [u], seen = new Set();
+    while (stack.length) {
+      const n = stack.pop();
+      if (seen.has(n)) continue;
+      seen.add(n); loBranch.add(n);
+      for (const q of pred[n]) if (!feeds[q] || q === u) stack.push(q);
+    }
+    if (shift > 0) for (const n of seen) col[n] += shift;
+  }
+  const row = {}, used = new Set();
+  const place = (n, pref) => {
+    for (let d = 0; ; d++) {
+      for (const r of d ? [pref + d, pref - d] : [pref]) {
+        if (!used.has(col[n] + "," + r)) { used.add(col[n] + "," + r); row[n] = r; return; }
+      }
+    }
+  };
+  const main = names.filter((n) => !loBranch.has(n)).sort((a, b) => col[a] - col[b]);
+  for (const n of main) {
+    const p = pred[n].find((q) => row[q] !== undefined);
+    place(n, p !== undefined ? row[p] : 0);
+  }
+  for (const n of [...loBranch].sort((a, b) => col[b] - col[a])) {
+    if (feeds[n] && row[feeds[n]] !== undefined) place(n, row[feeds[n]] - 1);
+    else {
+      const s = succ[n].find((q) => row[q] !== undefined);
+      place(n, s !== undefined ? row[s] : -1);
+    }
+  }
+  return Object.fromEntries(names.map((n) => [n, { x: col[n] * 120, y: row[n] * 100 }]));
+}
+
+function layoutSch(fit) {
+  const sc = S.model.schematic, lay = sc.layout || {};
+  const auto = sc.blocks.some((b) => !lay[b.name]) ? autoLayout(sc) : {};
+  S.pos = {};
+  for (const b of sc.blocks) {
+    const l = lay[b.name];
+    S.pos[b.name] = l && isFinite(l.x) && isFinite(l.y) ? { x: +l.x, y: +l.y } : auto[b.name];
+  }
+  if (fit) requestAnimationFrame(fitSch);
+}
+
+function fitSch() {
+  const svg = $("sch"), w = svg.clientWidth, h = svg.clientHeight;
+  const ps = Object.values(S.pos);
+  if (!ps.length || !w || !h) return;
+  const x0 = Math.min(...ps.map((p) => p.x)) - 30, x1 = Math.max(...ps.map((p) => p.x)) + BW + 30;
+  const y0 = Math.min(...ps.map((p) => p.y)) - 24, y1 = Math.max(...ps.map((p) => p.y)) + BH + 40;
+  const k = Math.min(w / (x1 - x0), h / (y1 - y0), 1.4);
+  S.sv = { k, tx: (w - (x1 - x0) * k) / 2 - x0 * k, ty: (h - (y1 - y0) * k) / 2 - y0 * k };
+  drawSch();
+}
+
+function portAt(ref) {
+  const [name, port] = ref.split(".");
+  const b = S.model.schematic.blocks.find((x) => x.name === name), P = S.pos[name];
+  if (!b || !P) return null;
+  const l = portLayout(b)[port];
+  return l && { x: P.x + l.x, y: P.y + l.y, dx: l.dx, dy: l.dy };
+}
+
+function route(a, b) {
+  const s = 12;
+  const a1 = { x: a.x + a.dx * s, y: a.y + a.dy * s }, b1 = { x: b.x + b.dx * s, y: b.y + b.dy * s };
+  const pts = [a, a1];
+  const ha = a.dx !== 0, hb = b.dx !== 0;
+  if (ha && hb) { const mx = (a1.x + b1.x) / 2; pts.push({ x: mx, y: a1.y }, { x: mx, y: b1.y }); }
+  else if (ha) pts.push({ x: b1.x, y: a1.y });
+  else if (hb) pts.push({ x: a1.x, y: b1.y });
+  else { const my = (a1.y + b1.y) / 2; pts.push({ x: a1.x, y: my }, { x: b1.x, y: my }); }
+  pts.push(b1, b);
+  return "M" + pts.map((p) => `${p.x} ${p.y}`).join(" L");
+}
+
+function schSelValid() {
+  const sc = S.model.schematic, sel = S.sel;
+  if (sel.kind === "block") return sc.blocks.some((b) => b.name === sel.name);
+  return sc.wires.some(([a, b]) => a === sel.a && b === sel.b);
+}
+
+let schQueued = false;
+function drawSchSoon() {
+  if (schQueued) return;
+  schQueued = true;
+  requestAnimationFrame(() => { schQueued = false; drawSch(); });
+}
+
+function drawSch() {
+  const svg = $("sch");
+  if (!S.model || $("plots").classList.contains("nosch")) return;
+  const sc = S.model.schematic, { k, tx, ty } = S.sv;
+  const wired = new Set(sc.wires.flat());
+  const out = [`<defs><pattern id="dots" width="${GRID}" height="${GRID}" patternUnits="userSpaceOnUse"><circle class="dots" cx="0" cy="0" r="1"/></pattern></defs>`];
+  const w = svg.clientWidth, h = svg.clientHeight;
+  out.push(`<g transform="translate(${tx} ${ty}) scale(${k})">`);
+  out.push(`<rect x="${-tx / k}" y="${-ty / k}" width="${w / k}" height="${h / k}" fill="url(#dots)"/>`);
+  for (const [a, b] of sc.wires) {
+    const pa = portAt(a), pb = portAt(b);
+    if (!pa || !pb) continue;
+    const d = route(pa, pb), sel = S.sel && S.sel.kind === "wire" && S.sel.a === a && S.sel.b === b;
+    out.push(`<g data-wire="${esc(a)}|${esc(b)}"><path class="whit" d="${d}"/><path class="wire${sel ? " sel" : ""}" d="${d}"/></g>`);
+  }
+  for (const b of sc.blocks) {
+    const P = S.pos[b.name];
+    if (!P) continue;
+    const sym = symbol(b), pl = portLayout(b);
+    const sel = S.sel && S.sel.kind === "block" && S.sel.name === b.name;
+    out.push(`<g class="blk${sel ? " sel" : ""}" data-block="${esc(b.name)}" transform="translate(${P.x} ${P.y})">`);
+    out.push(`<rect x="-2" y="-2" width="${BW + 4}" height="${BH + 4}" fill="transparent"/>`);
+    const leads = [];
+    for (const [p, l] of Object.entries(pl)) {
+      if (l.dx < 0) leads.push(`M${l.x} ${l.y} H${sym.inset.l}`);
+      else if (l.dx > 0) leads.push(`M${l.x} ${l.y} H${BW - sym.inset.r}`);
+      else leads.push(`M${l.x} ${l.y} V${sym.inset.t}`);
+    }
+    out.push(`<path class="lead" d="${leads.join(" ")}"/>`, sym.svg);
+    out.push(`<text class="bname" x="${BW / 2}" y="${BH + 15}">${esc(b.name)}</text>`);
+    const sm = summary(b);
+    if (sm) out.push(`<text class="bsum" x="${BW / 2}" y="${BH + 28}">${esc(sm)}</text>`);
+    const named = b.ports.length > 2;
+    for (const [p, l] of Object.entries(pl)) {
+      const ref = b.name + "." + p;
+      const cls = ["port", wired.has(ref) ? "wired" : "", ref === S.probe ? "probe" : "",
+                   SD && SD.mode === "wire" && SD.target === ref ? "hot" : ""].join(" ");
+      out.push(`<circle class="${cls}" data-port="${esc(ref)}" cx="${l.x}" cy="${l.y}" r="4"><title>${esc(ref)}</title></circle>`);
+      if (named) {
+        const [lx, ly, anchor] = l.dx < 0 ? [3, l.y - 5, "start"] : l.dx > 0 ? [BW - 3, l.y - 5, "end"] : [l.x + 5, l.y - 2, "start"];
+        out.push(`<text class="plab" x="${lx}" y="${ly}" text-anchor="${anchor}">${esc(p)}</text>`);
+      }
+      if (ref === S.probe) {
+        const [lx, ly, anchor] = l.dy < 0 ? [l.x - 6, l.y - 4, "end"] : [l.x + l.dx * 7, l.y + 14, l.dx < 0 ? "end" : "start"];
+        out.push(`<text class="ptag" x="${lx}" y="${ly}" text-anchor="${anchor}">${S.dir === "in" ? "probe ←" : "probe →"}</text>`);
+      }
+    }
+    out.push(`</g>`);
+  }
+  if (SD && SD.mode === "wire" && SD.cur) {
+    const a = portAt(SD.from);
+    if (a) out.push(`<path class="tmpwire" d="M${a.x} ${a.y} L${SD.cur.x} ${SD.cur.y}"/>`);
+  }
+  out.push(`</g>`);
+  if (!sc.blocks.length) out.push(`<text class="empty" x="${w / 2}" y="${h / 2}">no blocks</text>`);
+  svg.innerHTML = out.join("");
+  $("schdel").disabled = !S.sel;
+  $("schundo").disabled = !S.undo.length;
+}
+
+function fillAddMenu() {
+  const sel = $("schadd");
+  while (sel.options.length > 1) sel.remove(1);
+  for (const t of S.model.schematic.addable) sel.add(new Option(t.replace("_", " "), t));
+}
+
+function pushUndo(before, after) {
+  if (before === after) return;
+  S.undo.push(before);
+  if (S.undo.length > 100) S.undo.shift();
+}
+
+function discardEditorEdits() {
+  return !edModified() || confirm("The netlist editor has changes that aren't applied. Discard them?");
+}
+
+async function schOp(op, opt = {}) {
+  if (!discardEditorEdits()) { drawSch(); return; }
+  if (opt.layout !== false) {   // pin every block where it is drawn, so auto-placed ones stay put
+    op.layout = {};
+    for (const [n, p] of Object.entries(S.pos)) op.layout[n] = { x: Math.round(p.x), y: Math.round(p.y) };
+  }
+  let m;
+  try {
+    const r = await fetch("api/schematic", { method: "POST", body: JSON.stringify(op) });
+    m = await r.json();
+  } catch (e) {
+    showMsgs([["err", "viewer server not reachable: " + e]]);
+    return;
+  }
+  if (m.error) {
+    showMsgs([["err", m.error]]);
+    layoutSch(false);
+    drawSch();
+    return;
+  }
+  pushUndo(S.text, m.text);
+  ED.msg = null;
+  if (op.op === "move") {   // only the layout changed: no need to re-simulate
+    S.model.schematic = m.schematic;
+    S.model.text = S.text = m.text;
+    $("src").value = m.text;
+    refreshEditor();
+    renderGutter();
+    drawSch();
+    return;
+  }
+  if (m.added) S.sel = { kind: "block", name: m.added };
+  loadModel(m, { keep: true, renames: op.op === "rename" ? { [op.block]: op.to } : {} });
+  if (m.added) focusParams(m.added);
+}
+
+async function undo() {
+  if (!S.undo.length || !discardEditorEdits()) return;
+  const text = S.undo.pop();
+  const r = await fetch("api/netlist", { method: "POST", body: JSON.stringify({ text }) });
+  const m = await r.json();
+  if (m.error) { showMsgs([["err", "undo failed: " + m.error]]); return; }
+  loadModel(m, { keep: true });
+}
+
+function deleteSelected() {
+  const sel = S.sel;
+  if (!sel) return;
+  S.sel = null;
+  if (sel.kind === "block") schOp({ op: "delete", block: sel.name });
+  else schOp({ op: "disconnect", a: sel.a });
+}
+
+function setProbe(ref) {
+  if (!S.model.ports.includes(ref)) return;
+  S.probe = ref;
+  $("probe").value = ref;
+  S.view = null;
+  drawSch();
+  simulate();
+}
+
+function focusParams(name) {
+  const g = S.groups.find((x) => x.block === name);
+  if (ED.open || !g || !g._det) return;
+  g._det.open = true;
+  g._det.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  g._det.classList.add("flash");
+  setTimeout(() => g._det.classList.remove("flash"), 900);
+}
+
+function hookSch() {
+  const svg = $("sch");
+  const at = (e) => {
+    const r = svg.getBoundingClientRect(), sx = e.clientX - r.left, sy = e.clientY - r.top;
+    return { sx, sy, x: (sx - S.sv.tx) / S.sv.k, y: (sy - S.sv.ty) / S.sv.k };
+  };
+  svg.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    svg.focus({ preventScroll: true });
+    const p = at(e), t = e.target;
+    const port = t.closest("[data-port]"), blk = t.closest("[data-block]"), wire = t.closest("[data-wire]");
+    if (port) SD = { mode: "wire", from: port.dataset.port, p0: p };
+    else if (blk) {
+      const name = blk.dataset.block;
+      S.sel = { kind: "block", name };
+      SD = { mode: "move", name, p0: p, start: { ...S.pos[name] } };
+    } else if (wire) {
+      const [a, b] = wire.dataset.wire.split("|");
+      S.sel = { kind: "wire", a, b };
+    } else SD = { mode: "pan", p0: p, t0: { tx: S.sv.tx, ty: S.sv.ty } };
+    if (SD) svg.setPointerCapture(e.pointerId);
+    drawSch();
+  });
+  svg.addEventListener("pointermove", (e) => {
+    if (!SD) return;
+    const p = at(e);
+    if (Math.hypot(p.sx - SD.p0.sx, p.sy - SD.p0.sy) > 3) SD.moved = true;
+    if (!SD.moved) return;
+    if (SD.mode === "move") {
+      S.pos[SD.name] = { x: snap(SD.start.x + p.x - SD.p0.x), y: snap(SD.start.y + p.y - SD.p0.y) };
+    } else if (SD.mode === "pan") {
+      S.sv.tx = SD.t0.tx + p.sx - SD.p0.sx;
+      S.sv.ty = SD.t0.ty + p.sy - SD.p0.sy;
+      svg.style.cursor = "grabbing";
+    } else {
+      SD.cur = p;
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const tgt = el && el.closest && el.closest("[data-port]");
+      SD.target = tgt && tgt.dataset.port !== SD.from ? tgt.dataset.port : null;
+    }
+    drawSchSoon();
+  });
+  // double-clicks are detected here rather than with dblclick: the redraw on pointerdown
+  // replaces the element under the pointer, which makes the browser's click events unreliable
+  let last = null;
+  const twice = (key) => {
+    const now = performance.now(), hit = last && last.key === key && now - last.t < 450;
+    last = hit ? null : { key, t: now };
+    return hit;
+  };
+  const end = () => {
+    const d = SD;
+    SD = null;
+    svg.style.cursor = "";
+    if (!d) return;
+    if (d.mode === "move") {
+      const p = S.pos[d.name];
+      if (d.moved && (p.x !== d.start.x || p.y !== d.start.y)) schOp({ op: "move" });
+      else if (!d.moved && twice("block:" + d.name)) rename(d.name);
+      else focusParams(d.name);
+    } else if (d.mode === "wire") {
+      if (!d.moved) setProbe(d.from);
+      else if (d.target) schOp({ op: "connect", a: d.from, b: d.target });
+    } else if (!d.moved) {
+      S.sel = null;
+      if (twice("background")) fitSch();
+    }
+    drawSch();
+  };
+  const rename = (was) => {
+    const to = prompt(`Rename block "${was}" to:`, was);
+    if (to && to.trim() && to.trim() !== was) schOp({ op: "rename", block: was, to: to.trim() });
+  };
+  svg.addEventListener("pointerup", end);
+  svg.addEventListener("pointercancel", end);
+  svg.addEventListener("wheel", (e) => {
+    e.preventDefault();
+    const p = at(e), k = Math.min(3, Math.max(0.25, S.sv.k * (e.deltaY > 0 ? 0.9 : 1.1)));
+    S.sv = { k, tx: p.sx - p.x * k, ty: p.sy - p.y * k };
+    drawSchSoon();
+  }, { passive: false });
+  svg.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) { e.preventDefault(); undo(); }
+    else if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelected(); }
+    else if (e.key === "Escape") { S.sel = null; drawSch(); }
+    else if (e.key === "f" || e.key === "F") fitSch();
+  });
+  $("schadd").addEventListener("change", () => {
+    const type = $("schadd").value;
+    $("schadd").value = "";
+    if (!type) return;
+    const w = svg.clientWidth, h = svg.clientHeight;
+    let x = snap((w / 2 - S.sv.tx) / S.sv.k - BW / 2), y = snap((h / 2 - S.sv.ty) / S.sv.k - BH / 2);
+    while (Object.values(S.pos).some((p) => Math.abs(p.x - x) < 60 && Math.abs(p.y - y) < 60)) { x += GRID * 2; y += GRID * 2; }
+    schOp({ op: "add", type, x, y });
+  });
+  $("schdel").addEventListener("click", deleteSelected);
+  $("schundo").addEventListener("click", undo);
+  $("schfit").addEventListener("click", fitSch);
+  $("schtoggle").addEventListener("click", () => {
+    const on = $("plots").classList.toggle("nosch") === false;
+    $("schtoggle").classList.toggle("on", on);
+    try { localStorage.setItem("hetsim.sch", on ? "1" : "0"); } catch (e) { /* storage unavailable */ }
+    requestAnimationFrame(() => { draw(); drawSch(); });
+  });
+  try {
+    if (localStorage.getItem("hetsim.sch") === "0") { $("plots").classList.add("nosch"); $("schtoggle").classList.remove("on"); }
+    const h = +localStorage.getItem("hetsim.schh");
+    if (h > 0) $("plots").style.setProperty("--sch-h", h + "px");
+  } catch (e) { /* storage unavailable */ }
+  // resize handle on the panel's bottom edge
+  const rz = $("schresize");
+  let r0 = null;
+  rz.addEventListener("pointerdown", (e) => { r0 = { y: e.clientY, h: $("schp").offsetHeight }; rz.setPointerCapture(e.pointerId); });
+  rz.addEventListener("pointermove", (e) => {
+    if (!r0) return;
+    const hmax = $("plots").clientHeight - 260;
+    const h = Math.max(120, Math.min(hmax, r0.h + e.clientY - r0.y));
+    $("plots").style.setProperty("--sch-h", h + "px");
+    requestAnimationFrame(() => { draw(); drawSch(); });
+  });
+  rz.addEventListener("pointerup", () => {
+    if (!r0) return;
+    r0 = null;
+    try { localStorage.setItem("hetsim.schh", $("schp").offsetHeight); } catch (e) { /* storage unavailable */ }
+  });
+  window.addEventListener("resize", drawSch);
+}
+
+// ------------------------------------------------------------------ netlist editor
+const ED = { open: false, errLine: null, lines: -1, drawnErr: null, msg: null };
+
+function edModified() { return $("src").value !== S.text; }
+
+function renderGutter() {
+  const n = $("src").value.split("\n").length;
+  if (n === ED.lines && ED.drawnErr === ED.errLine) return;
+  ED.lines = n; ED.drawnErr = ED.errLine;
+  const g = $("gutter"), frag = document.createDocumentFragment();
+  for (let i = 1; i <= n; i++) {
+    const sp = document.createElement("span");
+    sp.textContent = i + "\n";
+    if (i === ED.errLine) sp.className = "bad";
+    frag.appendChild(sp);
+  }
+  frag.appendChild(document.createTextNode("\n\n\n"));   // room for the textarea's scrollbar
+  g.textContent = "";
+  g.appendChild(frag);
+  g.scrollTop = $("src").scrollTop;
+}
+
+function refreshEditor() {
+  if (!S.model) return;
+  const mod = edModified();
+  $("edapply").disabled = $("edrevert").disabled = !mod;
+  $("edsave").style.display = S.model.can_save ? "" : "none";
+  $("edstate").textContent = mod ? "● modified" : "";
+  const f = S.model.file;
+  $("edfile").textContent = f ? f.split(/[\\/]/).pop() : "in-memory circuit";
+  $("edfile").title = f || "not loaded from a file: use Export netlist to keep it";
+  const note = $("ednote");
+  note.textContent = "";
+  if (ED.msg) {
+    const d = document.createElement("div");
+    d.className = ED.msg[0];
+    d.textContent = ED.msg[1];
+    note.appendChild(d);
+  }
+  if (S.slidersDirty) {
+    const d = document.createElement("div");
+    d.className = "warn";
+    d.textContent = "The sliders have changes that aren't in this text. Applying the text resets them.";
+    const b = document.createElement("button");
+    b.textContent = "Pull slider values into text";
+    b.title = "Rewrite the text from the current settings. Comments are dropped (Ctrl+Z undoes it).";
+    b.addEventListener("click", pullSliders);
+    d.appendChild(b);
+    note.appendChild(d);
+  }
+}
+
+function setEdMsg(cls, text) { ED.msg = text ? [cls, text] : null; refreshEditor(); }
+
+function insertText(t) {
+  const src = $("src");
+  src.focus();
+  // execCommand keeps the browser's undo history; setRangeText is the fallback
+  if (!document.execCommand("insertText", false, t)) {
+    src.setRangeText(t, src.selectionStart, src.selectionEnd, "end");
+    onSrcInput();
+  }
+}
+
+function gotoLine(n) {
+  const src = $("src"), lines = src.value.split("\n");
+  let a = 0;
+  for (let i = 0; i < n - 1 && i < lines.length; i++) a += lines[i].length + 1;
+  src.focus();
+  src.setSelectionRange(a, a + (lines[n - 1] || "").length);
+  src.scrollTop = Math.max(0, (n - 6) * 18);
+}
+
+async function pullSliders() {
+  const r = await fetch("api/export", { method: "POST",
+    body: JSON.stringify({ params: collect(), resolution: S.resolution, format: S.model.format }) });
+  const text = await r.text();
+  $("src").select();
+  insertText(text);
+  S.slidersDirty = false;
+  setEdMsg("", "Text rewritten from the slider values. Apply or Save to keep it.");
+}
+
+async function applyText(save, force = false) {
+  let m;
+  try {
+    const r = await fetch("api/netlist", { method: "POST", body: JSON.stringify({ text: $("src").value, save, force }) });
+    m = await r.json();
+  } catch (e) {
+    setEdMsg("err", "viewer server not reachable: " + e);
+    return;
+  }
+  if (m.error) {
+    ED.errLine = m.line || null;
+    renderGutter();
+    setEdMsg("err", (m.line ? `line ${m.line}: ` : "") + m.error);
+    if (m.line) gotoLine(m.line);
+    return;
+  }
+  ED.errLine = null;
+  pushUndo(S.text, m.text);
+  loadModel(m);
+  if (m.changed_on_disk) {
+    if (confirm(m.save_error + ".\nOverwrite it with the editor text?")) return applyText(true, true);
+    setEdMsg("warn", "Applied, not saved: " + m.save_error);
+  } else if (m.save_error) {
+    setEdMsg("err", "Applied, not saved: " + m.save_error);
+  } else {
+    setEdMsg("", m.saved ? "Applied and saved to " + m.file : "Applied.");
+  }
+}
+
+function onSrcInput() {
+  if (ED.errLine) ED.errLine = null;
+  renderGutter();
+  refreshEditor();
+}
+
+function toggleEditor(on) {
+  ED.open = on;
+  $("main").classList.toggle("editing", on);
+  $("edit").classList.toggle("on", on);
+  refreshEditor();
+  renderGutter();
+  if (on) $("src").focus();
+  requestAnimationFrame(() => { draw(); drawSch(); });   // the plot column changed width
+}
+
+function hookEditor() {
+  const src = $("src");
+  src.addEventListener("input", onSrcInput);
+  src.addEventListener("scroll", () => { $("gutter").scrollTop = src.scrollTop; });
+  src.addEventListener("keydown", (e) => {
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      insertText("  ");
+    } else if (e.key === "Enter" && !e.shiftKey) {
+      // keep the indent; indent one more level after "key:"
+      const v = src.value, i = src.selectionStart;
+      const line = v.slice(v.lastIndexOf("\n", i - 1) + 1, i);
+      let ind = line.match(/^[ \t]*/)[0];
+      if (/:\s*$/.test(line)) ind += "  ";
+      e.preventDefault();
+      insertText("\n" + ind);
+    } else if (e.key === "Escape") {
+      src.blur();   // so Tab can move focus out again
+    }
+  });
+  window.addEventListener("keydown", (e) => {
+    if (!ED.open || !(e.ctrlKey || e.metaKey)) return;
+    if (e.key === "Enter") { e.preventDefault(); applyText(false); }
+    else if (e.key === "s" || e.key === "S") { e.preventDefault(); applyText(!!S.model.can_save); }
+  });
+  $("edit").addEventListener("click", () => toggleEditor(!ED.open));
+  $("edapply").addEventListener("click", () => applyText(false));
+  $("edsave").addEventListener("click", () => applyText(true));
+  $("edrevert").addEventListener("click", () => {
+    src.select();
+    insertText(S.text);
+    ED.errLine = null;
+    setEdMsg(null);
+  });
+  window.addEventListener("beforeunload", (e) => {
+    if (S.model && edModified()) { e.preventDefault(); e.returnValue = ""; }
+  });
+}
+
+function hookHeader() {
+  for (const id of ["dir", "solver"]) {
+    for (const b of $(id).querySelectorAll("button")) {
+      b.addEventListener("click", () => {
+        for (const o of $(id).querySelectorAll("button")) o.classList.toggle("on", o === b);
+        if (id === "dir") { S.dir = b.dataset.v; drawSch(); } else S.solver = b.dataset.v;
+        simulate();
+      });
+    }
+  }
+  $("probe").addEventListener("change", () => { S.probe = $("probe").value; S.view = null; simulate(); drawSch(); });
+  $("swshow").addEventListener("change", () => { S.view = null; drawFFT(); });
+  $("rbw").addEventListener("change", () => { S.rbw = $("rbw").value ? parseF($("rbw").value) : null; simulate(); });
+  $("pnon").addEventListener("change", () => { S.pn = $("pnon").checked; simulate(); });
+  $("swinterp").addEventListener("change", () => drawFFT());
+  $("swpick").addEventListener("change", () => setSwSel($("swpick").value));
+  // the plot's range; a view from 0 Hz starts the grid a little in (a product at 0 Hz is DC)
+  const viewRange = () => (S.geom ? [Math.max(S.geom.x0, (S.geom.x1 - S.geom.x0) / 20), S.geom.x1] : null);
+  $("swplace").addEventListener("change", () => setSwOut($("swplace").value === "out" ? viewRange() : null));
+  $("swview").addEventListener("click", () => setSwOut(viewRange()));
+  for (const id of ["swfrom", "swto"]) {
+    $(id).addEventListener("change", () => {
+      const a = parseF($("swfrom").value), b = parseF($("swto").value);
+      if (isFinite(a) && isFinite(b) && 0 < a && a < b) setSwOut([a, b]);
+      else { $("swfrom").value = fmtF(S.swOut[0], 6); $("swto").value = fmtF(S.swOut[1], 6); }
+    });
+  }
+  window.addEventListener("keydown", (e) => {
+    const t = document.activeElement && document.activeElement.tagName;
+    if (e.key === "Escape" && S.swSel && !["INPUT", "TEXTAREA", "SELECT"].includes(t)) setSwSel(null);
+  });
+  $("swpts").addEventListener("change", () => {
+    const t = $("swpts").value.trim(), v = Math.round(+t);
+    S.sweepPts = t && isFinite(v) && v >= 2 ? Math.min(v, 2001) : null;
+    $("swpts").value = S.sweepPts || "";
+    simulate();
+  });
+  $("floor").addEventListener("change", () => {
+    const v = parseFloat($("floor").value);
+    if (isFinite(v)) { S.floor = v; simulate(); }
+  });
+  $("res").addEventListener("change", () => {
+    const v = parseF($("res").value);
+    if (isFinite(v) && v > 0) {
+      S.resolution = v;
+      for (const g of S.groups) for (const p of g.params) if (p.snap && p._range) setRange(p, p._range);
+      simulate();
+    }
+    $("res").value = fmtF(S.resolution);
+  });
+  $("export").addEventListener("click", async () => {
+    const r = await fetch("api/export", { method: "POST", body: JSON.stringify({ params: collect(), resolution: S.resolution }) });
+    const text = await r.text();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([text], { type: "text/yaml" }));
+    a.download = (S.model.name || "circuit").replace(/[^\w.-]+/g, "_") + "-edited.yaml";
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  });
+  window.addEventListener("resize", () => draw());
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw());
+}
+
+function loadModel(m, opt = {}) {
+  // first load, a netlist applied from the editor, or a schematic edit (opt.keep: the sliders
+  // keep their values). Keep the port and a hand-set resolution if they still fit.
+  const first = !S.model, ren = opt.renames || {};
+  const prev = S.groups;
+  if (first || S.resolution === S.model.resolution) S.resolution = m.resolution;
+  if (S.probe) {
+    const [b, port] = S.probe.split(".");
+    if (ren[b]) S.probe = ren[b] + "." + port;
+  }
+  if (first || !m.ports.includes(S.probe)) { S.probe = m.probe; S.view = null; }
+  S.model = m;
+  S.groups = m.groups;
+  S.text = m.text;
+  if (opt.keep) carrySliders(prev, ren); else S.slidersDirty = false;
+  if ($("src").value !== m.text) $("src").value = m.text;
+  if (S.sel && S.sel.kind === "block" && ren[S.sel.name]) S.sel.name = ren[S.sel.name];
+  if (S.sel && !schSelValid()) S.sel = null;
+  layoutSch(first);
+  $("title").textContent = m.name || "hetsim viewer";
+  document.title = (m.name ? m.name + " · " : "") + "hetsim viewer";
+  const sel = $("probe");
+  sel.textContent = "";
+  for (const p of m.ports) sel.add(new Option(p, p));
+  sel.value = S.probe;
+  $("res").value = fmtF(S.resolution);
+  buildPanel();
+  refreshEditor();
+  renderGutter();
+  fillAddMenu();
+  drawSch();
+  simulate();
+}
+
+function carrySliders(prev, ren) {
+  const old = new Map();
+  for (const g of prev) for (const p of g.params) old.set((ren[g.block] || g.block) + "|" + p.path, p);
+  for (const g of S.groups) {
+    for (const p of g.params) {
+      const o = old.get(g.block + "|" + p.path);
+      if (!o || o.kind !== p.kind) continue;
+      p.value = o.value; p.enabled = o.enabled;
+      if (p.limits) p.value = Math.min(Math.max(p.value, p.min), p.max);
+      else if (o.min !== undefined && !o.limits && !p.band) { p.min = o.min; p.max = o.max; }
+    }
+  }
+}
+
+async function init() {
+  const r = await fetch("api/model");
+  const m = await r.json();
+  if (m.error) { showMsgs([["err", m.error]]); return; }
+  $("floor").value = S.floor;
+  hookHeader();
+  hookPlot();
+  hookEditor();
+  hookSch();
+  loadModel(m);
+}
+init();
+</script>
+</body>
+</html>
