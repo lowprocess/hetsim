@@ -89,6 +89,8 @@ blocks:
   amp1: {type: amplifier, gain_db: 10}
   amp2: {type: amplifier, gain_db: 10}
   amp3: {type: amplifier, gain_db: 10}
+  det1: {type: detector, detect: peak}
+  xy1: {type: xyplot}
 settings: {}
 wires:
   - [ant.out, lpf.in]
@@ -103,11 +105,14 @@ wires:
   - [amp3.out, mix2.rf]
   - [lna.out, mix1.rf]
   - [mix1.if, amp1.in]
+  - [ifamp.out, det1.in]
+  - [det1.out, xy1.y]
+  - [lo1.sweep, xy1.x]
 layout:
   ant: {x: 0, y: 0}
   lpf: {x: 140, y: 0}
   lna: {x: 300, y: 0}
-  lo1: {x: 340, y: -100}
+  lo1: {x: 340, y: -200}
   mix1: {x: 420, y: 0}
   roof: {x: 640, y: 0}
   lo2: {x: 780, y: -100}
@@ -117,3 +122,5 @@ layout:
   amp1: {x: 540, y: 0}
   amp2: {x: 960, y: 0}
   amp3: {x: 740, y: 0}
+  det1: {x: 1320, y: 0}
+  xy1: {x: 1400, y: -140}

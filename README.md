@@ -221,7 +221,10 @@ Frames reuse the last sweep rather than recomputing it.
   envelope detector. The reading shows under the block, and the X/Y plot's y axis
   follows the scale (dBm down to the floor, or volts from 0).
 - `xyplot` draws one detector's reading against one swept tone's frequency, a point
-  per band-sweep step, in its own tab under the spectrum.
+  per band-sweep step, in its own tab under the spectrum. It always spans the whole
+  swept band: with "steps on output grid", which keeps only the steps that put the
+  anchor in its window, the X/Y plots get their own even sweep with the same number of
+  steps.
 - Wiring uses **control ports**, drawn as diamonds with dashed wires: wire a source's
   `sweep` port to the plot's `x`, and the detector's `out` to its `y`. Control ports
   carry no RF, connect only to each other, and aren't offered as probe points.

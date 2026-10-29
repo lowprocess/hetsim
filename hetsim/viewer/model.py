@@ -787,7 +787,7 @@ class ViewerModel:
             out["detectors"] = {n: _reading(b, tone_result.incident((n, "in"))) for n, b in dets.items()}
             swept = [t for b in c.blocks.values() for t in getattr(b, "sweep_specs", lambda: [])()]
             sweep_ports = [probe] + [f"{n}.in" for n in dets]   # detectors' inputs too, for the X/Y plots
-            sw = None
+            sw = xy_sw = None   # the tracks' sweep, and the X/Y plots' (the same unless on an output grid)
             if swept and not frame:
                 par = analysis.POOL_SIZE if self.sweep_workers is None else max(1, self.sweep_workers)
                 if analysis._POOL_FAILED:
@@ -841,7 +841,11 @@ class ViewerModel:
                 if note:
                     out["sweep"]["note"] = note
             if not frame and any(b.kind == "xyplot" for b in c.blocks.values()):
-                out["xy"] = xy_plots(c, sw)
+                if swept and req.get("sweep_out"):
+                    # an output grid only holds the steps that put its anchor in the window; an
+                    # X/Y plot shows the whole swept band, evenly, with the same number of steps
+                    xy_sw = band_sweep(c, st, n, workers=self.sweep_workers, ports=[f"{d}.in" for d in dets])
+                out["xy"] = xy_plots(c, xy_sw or sw)
             if rbw and solver == "tone":   # phase noise for the RBW trace: the tone solver's skirts
                 bn = 10 * math.log10(1.0645 * rbw)   # Gaussian RBW noise bandwidth
                 sk = phase_noise_skirts(c, probe, st, incident, workers=self.sweep_workers, nominal=tone_result,
@@ -963,7 +967,7 @@ def xy_plots(c, sw) -> list[dict]:
             t = src.sweep_specs()[0]
             band = "" if det.fmin is None and det.fmax is None else \
                 f", {fmt_freq(det.fmin or 0)} – {fmt_freq(det.fmax) if det.fmax else '…'}"
-            rec.update(x=[s[t.name] for s in sw.steps],
+            rec.update(x=[s[t.name] for s in sw.steps], x_tone=t.name,
                        y=[_finite_or_none(det.output(r.incident((yw[0], "in")))) for r in sw.results],
                        y_unit=det.unit, x_label=f"{t.name} frequency ({xw[0]})", y_label=f"{yw[0]} ({det.unit})",
                        title=f"{name}: {yw[0]} {det.detect}, {det.scale}{band}, vs {t.name}")

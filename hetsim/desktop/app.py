@@ -563,6 +563,7 @@ class MainWindow(QMainWindow):
                 self.frame = min(self.frame, len(steps) - 1)
                 self.frame_slider.setValue(self.frame)
         self.vs.extra["frame"] = self.frame
+        self.vs.extra["frame_freqs"] = steps[self.frame] if self.frame is not None else None
         if self.frame is None:
             self.frame_label.setText("")
         else:
@@ -608,7 +609,7 @@ class MainWindow(QMainWindow):
             self.play.setText("▶")
         was, self.frame = self.frame, None
         self.frame_busy = False
-        self.vs.extra["frame"] = None
+        self.vs.extra["frame"] = self.vs.extra["frame_freqs"] = None
         self.frame_label.setText("")
         if resimulate and was is not None and self.model is not None:
             self.simulate()

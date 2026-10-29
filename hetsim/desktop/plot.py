@@ -562,14 +562,15 @@ class XYView(QWidget):
             qp.setBrush(theme.c("series-1"))
             for px, py, _, _ in self.pts:
                 qp.drawEllipse(QPointF(px, py), 2.5, 2.5)
-        fr = self.s.extra.get("frame")
-        if fr is not None and fr < len(xs):   # the animation's step
+        fx = (self.s.extra.get("frame_freqs") or {}).get(r.get("x_tone"))
+        if fx is not None and x0 <= fx <= x1:   # the animation's step, placed by the swept tone's frequency
             qp.setPen(QPen(theme.c("series-2"), 1.5, Qt.PenStyle.DashLine))
-            qp.drawLine(QPointF(X(xs[fr]), pt), QPointF(X(xs[fr]), h - pb))
-            if ys[fr] is not None:
+            qp.drawLine(QPointF(X(fx), pt), QPointF(X(fx), h - pb))
+            i = min(range(len(xs)), key=lambda k: abs(xs[k] - fx))
+            if ys[i] is not None or linear:
                 qp.setPen(QPen(theme.c("surface-1"), 1.5))
                 qp.setBrush(theme.c("series-2"))
-                qp.drawEllipse(QPointF(X(xs[fr]), Y(ys[fr])), 5, 5)
+                qp.drawEllipse(QPointF(X(xs[i]), Y(y0 if ys[i] is None else ys[i])), 5, 5)
         qp.restore()
 
     def mouseMoveEvent(self, e):

@@ -425,3 +425,15 @@ def test_xy_plot_of_a_detector_over_the_sweep(tmp_path):
         m.edit({"op": "connect", "a": "lo.sweep", "b": "mix.rf"})
     added = m.edit({"op": "add", "type": "detector", "x": 0, "y": 300})["added"]
     assert added == "det2" and m.base["blocks"]["det2"]["detect"] == "peak"
+
+
+def test_xy_plot_spans_the_band_on_an_output_grid(tmp_path):
+    m = _xy_model(tmp_path)
+    r = m.simulate({"probe": "ifamp.out", "solver": "tone", "min_dbm": -160, "params": {}, "sweep_points": 41,
+                    "sweep_out": {"fmin": 10.4e6, "fmax": 11.0e6, "points": 41}})
+    lo = [s["LO"] for s in r["sweep"]["steps"]]
+    assert min(lo) >= 110.0e6 and max(lo) <= 111.4e6                     # tracks: only the grid's slice
+    xy = r["xy"][0]
+    assert xy["x_tone"] == "LO" and len(xy["x"]) == 41
+    assert xy["x"][0] == pytest.approx(108.7e6) and xy["x"][-1] == pytest.approx(112.7e6)   # X/Y: the whole band
+    assert xy["x"][1] - xy["x"][0] == pytest.approx(0.1e6)                # evenly
