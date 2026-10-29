@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PySide6")
 
-from PySide6.QtCore import QEvent, QPointF, Qt  # noqa: E402
+from PySide6.QtCore import QEvent, QPointF, QSettings, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -62,11 +62,19 @@ def win(app, tmp_path):
     f.write_text(VHF.read_text())
     m = ViewerModel.from_file(f)
     m.sweep_workers = 1
-    w = MainWindow(m, sync=True)
+    w = MainWindow(m, sync=True, settings=_settings(tmp_path))
     w.resize(1400, 900)
     w.show()
     app.processEvents()
     yield w
+    _dispose(w, app)
+
+
+def _settings(tmp_path):
+    return QSettings(str(tmp_path / "settings.ini"), QSettings.Format.IniFormat)   # not the user's own
+
+
+def _dispose(w, app):
     w.runner.stop()
     w.editor.load(w.model.text, None, False)   # no unsaved-edits prompt on close
     # delete the window here, not whenever the garbage collector runs (which may be in the
@@ -186,3 +194,59 @@ def test_phase_noise_table_and_limits(win):
     win.panel.limitsRequested.emit("pre", "f1", [80e6, 95e6])
     assert "f1: [80MHz, 95MHz]" in win.model.text
     assert win.panel.rows[("pre", "f1")].p["limits"] == [80e6, 95e6]
+
+
+# ---------------------------------------------------------------- without a netlist
+@pytest.fixture
+def bare(app, tmp_path):
+    from hetsim.desktop.app import MainWindow
+    w = MainWindow(None, sync=True, settings=_settings(tmp_path), workers=1)
+    w.show()
+    app.processEvents()
+    yield w
+    if w.model is not None:
+        _dispose(w, app)
+    else:
+        w.runner.stop()
+        w.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        w.close()
+        app.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        del w
+        gc.collect()
+
+
+def test_opens_on_the_start_page(bare):
+    assert bare.pages.currentWidget() is bare.start and bare.model is None
+    assert bare.view_bar.isHidden() and not bare.save_act.isEnabled() and not bare.recent_menu.isEnabled()
+    assert bare.start.examples is not None and bare.start.examples.count() >= 3      # source checkout
+    assert bare.start.recent.isHidden()
+    _paint(bare)
+
+
+def test_new_circuit_then_save_as_and_reopen(bare, tmp_path, monkeypatch):
+    bare.new_circuit()
+    assert bare.pages.currentIndex() == 1 and set(bare.sch.blocks) == {"src1", "load1"}
+    assert bare.vs.data["tone"] and bare.probe == "src1.out" and "not saved" in bare.windowTitle()
+    bare.sch_op({"op": "add", "type": "amplifier", "x": 120, "y": 100})
+    from PySide6.QtWidgets import QFileDialog
+    target = tmp_path / "mine.yaml"
+    monkeypatch.setattr(QFileDialog, "getSaveFileName", lambda *a, **k: (str(target), ""))
+    bare.save()                                           # no file yet: Save goes to Save As
+    assert "amp1:" in target.read_text() and "mine.yaml" in bare.windowTitle() and bare.editor.can_save
+    assert bare._recent() == [str(target.resolve())] and bare.recent_menu.isEnabled()
+    bare.close_model()
+    assert bare.pages.currentWidget() is bare.start and bare.start.recent.count() == 1
+    bare.start.openPath.emit(str(target))                 # reopen from the recent list
+    assert "amp1" in bare.sch.blocks and bare.model.source_path == target
+
+
+def test_open_errors_keep_the_window(bare, tmp_path, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    shown = []
+    monkeypatch.setattr(QMessageBox, "warning", lambda *a, **k: shown.append(a[2]))
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("blocks: {x: {type: nosuch}}\n")
+    bare.open_path(str(bad))
+    assert shown and "nosuch" in shown[0] and bare.pages.currentWidget() is bare.start
+    bare.open_path(str(VHF))
+    assert bare.pages.currentIndex() == 1 and len(bare.sch.blocks) == 7

@@ -68,7 +68,7 @@ def main(argv=None):
     v.add_argument("--workers", type=int, help="processes for band sweeps (default: one per physical core; 1: none)")
 
     d = sub.add_parser("app", help="open the native desktop viewer (needs PySide6)")
-    d.add_argument("netlist")
+    d.add_argument("netlist", nargs="?", help="netlist to open (default: the start page)")
     d.add_argument("--workers", type=int, help="processes for band sweeps (default: one per physical core; 1: none)")
 
     a = ap.parse_args(argv)

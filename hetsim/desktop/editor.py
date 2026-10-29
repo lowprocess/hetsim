@@ -121,7 +121,7 @@ class NetlistEditor(QWidget):
         self.apply.setToolTip("Rebuild the circuit from this text (Ctrl+Enter)")
         self.apply.setDefault(True)
         self.save = QPushButton("Save")
-        self.save.setToolTip("Apply, then write this text to the netlist file (Ctrl+S)")
+        self.save.setToolTip("Apply, then write this text to the netlist file (File > Save, Ctrl+S)")
         for w in (self.file, self.state):
             bar.addWidget(w)
         bar.addStretch(1)
@@ -143,8 +143,7 @@ class NetlistEditor(QWidget):
         self.revert.clicked.connect(self._revert)
         QShortcut(QKeySequence("Ctrl+Return"), self.code,
                   activated=lambda: self.applyRequested.emit(self.code.toPlainText(), False))
-        QShortcut(QKeySequence.StandardKey.Save, self, context=Qt.ShortcutContext.WidgetWithChildrenShortcut,
-                  activated=lambda: self.applyRequested.emit(self.code.toPlainText(), self.can_save))
+        # Ctrl+S is the window's File > Save, which applies this text first
 
     def modified(self) -> bool:
         return self.code.toPlainText() != self.text

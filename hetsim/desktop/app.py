@@ -1,8 +1,8 @@
-"""hetsim desktop viewer: python -m hetsim app netlist.yaml
+"""hetsim desktop viewer: python -m hetsim app [netlist.yaml]
 
 A native window around ViewerModel (the same model the browser viewer serves): parameters
 on the left, schematic, spectrum and waveform on the right, simulations on a worker thread.
-No server and no browser.
+No server and no browser. Without a netlist it opens on a start page (new, open, recent).
 """
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import sys
 import threading
 from pathlib import Path
 
-from PySide6.QtCore import QSignalBlocker, Qt, QTimer
+from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
                                QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter, QStackedWidget,
@@ -24,17 +24,23 @@ from .params import ParamPanel, carry_values, parse_f
 from .plot import SpectrumPlot, ViewState, WaveformPlot, fmt_f
 from .schematic import SchematicView
 from .sim import SimRunner
+from .start import StartPage
 
+NETLISTS = "Netlists (*.yaml *.yml *.json);;All files (*)"
+RECENT_MAX = 10
 RBWS = ["off", "1 kHz", "3 kHz", "10 kHz", "30 kHz", "100 kHz", "300 kHz", "1 MHz", "3 MHz"]
 INTERP = [("0", "no interpolation"), ("lin4", "linear ×4"), ("lin8", "linear ×8"),
           ("pchip4", "smooth ×4"), ("pchip8", "smooth ×8"), ("pchip16", "smooth ×16")]
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, model: ViewerModel, sync: bool = False):
+    def __init__(self, model: ViewerModel | None = None, sync: bool = False, settings: QSettings | None = None,
+                 workers: int | None = None):
         super().__init__()
         self.model = model
         self.sync = sync   # tests: simulate on the calling thread
+        self.settings = settings or QSettings("hetsim", "hetsim")
+        self.workers = workers if model is None else model.sweep_workers
         self.vs = ViewState()
         self.info = None
         self.probe = None
@@ -46,8 +52,12 @@ class MainWindow(QMainWindow):
         self.runner.done.connect(self.on_result)
         self.runner.busy.connect(lambda b: self.busy.setText("● simulating" if b else ""))
         self.resize(1400, 900)
+        self.setAcceptDrops(True)
         self._build()
-        self.load_model(model.info(), first=True)
+        if model is not None:
+            self.set_model(model)
+        else:
+            self.show_start()
 
     # ------------------------------------------------------------ layout
     def _build(self):
@@ -101,10 +111,8 @@ class MainWindow(QMainWindow):
         self.ed_btn.setToolTip("Edit the netlist source")
         self.ed_btn.toggled.connect(lambda on: self.left.setCurrentIndex(1 if on else 0))
         tb.addWidget(self.ed_btn)
-        exp = QPushButton("Export netlist")
-        exp.setToolTip("Save the netlist with the current settings")
-        exp.clicked.connect(self.export)
-        tb.addWidget(exp)
+        self.view_bar = tb
+        self._menus()
 
         self.addToolBarBreak()
         self.swbar = QToolBar("band sweep")
@@ -218,7 +226,14 @@ class MainWindow(QMainWindow):
         split.addWidget(right)
         split.setSizes([360, 1040])
         split.setStretchFactor(1, 1)
-        self.setCentralWidget(split)
+        self.start = StartPage()
+        self.start.newRequested.connect(self.new_circuit)
+        self.start.openRequested.connect(self.open_dialog)
+        self.start.openPath.connect(self.open_path)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.start)
+        self.pages.addWidget(split)
+        self.setCentralWidget(self.pages)
 
         self.status = QLabel()
         self.busy = QLabel()
@@ -228,6 +243,30 @@ class MainWindow(QMainWindow):
         esc = QShortcut(QKeySequence(Qt.Key.Key_Escape), self)
         esc.activated.connect(lambda: self.set_sw_sel(None) if self.vs.sw_sel else None)
         QShortcut(QKeySequence.StandardKey.Undo, self.sch, activated=self.do_undo)
+
+    def _menus(self):
+        m = self.menuBar().addMenu("&File")
+
+        def act(text, key, fn, tip=""):
+            a = QAction(text, self)
+            if key:
+                a.setShortcut(key)
+            a.setStatusTip(tip)
+            a.triggered.connect(fn)
+            m.addAction(a)
+            return a
+        act("&New circuit", QKeySequence.StandardKey.New, self.new_circuit, "Start from one source wired to a load")
+        act("&Open…", QKeySequence.StandardKey.Open, self.open_dialog, "Open a YAML or JSON netlist")
+        self.recent_menu = m.addMenu("Open &Recent")
+        m.addSeparator()
+        self.save_act = act("&Save", QKeySequence.StandardKey.Save, self.save,
+                            "Write the netlist to its file (applying the editor's text first)")
+        self.save_as_act = act("Save &As…", QKeySequence.StandardKey.SaveAs, self.save_as, "Write the netlist to a new file")
+        self.export_act = act("&Export netlist…", None, self.export, "Save the netlist with the current slider settings")
+        m.addSeparator()
+        self.close_act = act("&Close", QKeySequence.StandardKey.Close, self.close_model, "Back to the start page")
+        act("&Quit", QKeySequence.StandardKey.Quit, self.close)
+        self._refresh_recent()
 
     def _segmented(self, tb, items, fn):
         group = QActionGroup(self)
@@ -262,7 +301,7 @@ class MainWindow(QMainWindow):
             carry_values(prev, info["groups"], renames)
         else:
             self.sliders_dirty = False
-        self.setWindowTitle((info["name"] + " · " if info["name"] else "") + "hetsim")
+        self._title()
         with QSignalBlocker(self.port):
             self.port.clear()
             self.port.addItems(info["ports"])
@@ -278,7 +317,7 @@ class MainWindow(QMainWindow):
                 self.add.addItem(t.replace("_", " "), t)
         self.sch.load(info["schematic"], info["groups"], self.probe, self.vs.incident, fit=first)
         if first:
-            QTimer.singleShot(0, self.sch.fit)
+            QTimer.singleShot(0, self.sch, self.sch.fit)   # dropped if the view is gone by then
         self.undo_btn.setEnabled(bool(self.undo))
         self.simulate()
 
@@ -537,6 +576,147 @@ class MainWindow(QMainWindow):
         self._refresh_pull()
         self.editor.show_note("Text rewritten from the slider values. Apply or Save to keep it.")
 
+    # ------------------------------------------------------------ files
+    def set_model(self, model: ViewerModel) -> bool:
+        """Show `model` in the window (a file opened, a new circuit); False if the user kept the old one."""
+        if self.model is not None and self.info is not None and not self._discard_editor_edits():
+            return False
+        if model.sweep_workers is None:
+            model.sweep_workers = self.workers
+        self.model = self.runner.model = model
+        self.info, self.undo, self.sliders_dirty = None, [], False
+        self.vs.data, self.vs.view, self.vs.sw_sel = None, None, None
+        self.vs.sw_out = None
+        with QSignalBlocker(self.sw_place):
+            self.sw_place.setCurrentIndex(0)
+        for a in self.sw_out_acts:
+            a.setVisible(False)
+        self.ed_btn.setChecked(False)
+        self.editor.show_note(None)
+        self._workspace(True)
+        self.load_model(model.info(), first=True)
+        if model.source_path:
+            self._remember(model.source_path)
+        return True
+
+    def _workspace(self, on: bool):
+        self.pages.setCurrentIndex(1 if on else 0)
+        self.view_bar.setVisible(on)
+        if not on:
+            self.swbar.setVisible(False)
+        for a in (self.save_act, self.save_as_act, self.export_act, self.close_act):
+            a.setEnabled(on)
+
+    def show_start(self):
+        self.model = self.info = None
+        self.setWindowTitle("hetsim")
+        self.start.set_recent(self._recent())
+        self.status.setText("")
+        self._workspace(False)
+
+    def close_model(self):
+        if self.model is None or self._discard_editor_edits():
+            self.show_start()
+
+    def new_circuit(self):
+        self.set_model(ViewerModel.new())
+
+    def open_dialog(self):
+        start = str(self.model.source_path.parent) if self.model and self.model.source_path else ""
+        path, _ = QFileDialog.getOpenFileName(self, "Open netlist", start, NETLISTS)
+        if path:
+            self.open_path(path)
+
+    def open_path(self, path: str):
+        try:
+            model = ViewerModel.from_file(path)
+        except Exception as e:  # noqa: BLE001  - a bad file must not close the window
+            self._forget(path) if not Path(path).exists() else None
+            QMessageBox.warning(self, "Open netlist", f"Couldn't open {path}:\n{type(e).__name__}: {e}")
+            if self.model is None:
+                self.start.set_recent(self._recent())
+            return
+        self.set_model(model)
+
+    def save(self):
+        """Write the netlist to its file; text waiting in the editor is applied first."""
+        if self.model is None:
+            return
+        if self.model.source_path is None:
+            return self.save_as()
+        if self.editor.modified():
+            return self.apply_text(self.editor.code.toPlainText(), True)
+        try:
+            self.model.save()
+        except FileChangedError as e:
+            if QMessageBox.question(self, "Save", f"{e}.\nOverwrite it?") != QMessageBox.StandardButton.Yes:
+                return
+            self.model.save(force=True)
+        except OSError as e:
+            QMessageBox.warning(self, "Save", f"Couldn't save: {e}")
+            return
+        self.statusBar().showMessage(f"saved {self.model.source_path}", 5000)
+
+    def save_as(self):
+        if self.model is None:
+            return
+        if self.editor.modified():   # save what the editor shows
+            self.apply_text(self.editor.code.toPlainText(), False)
+            if self.editor.modified():
+                return   # it didn't apply: the error is shown in the editor
+        here = self.model.source_path
+        name = str(here) if here else (self.info["name"] or "circuit").replace(" ", "_") + ".yaml"
+        path, _ = QFileDialog.getSaveFileName(self, "Save netlist as", name, "YAML (*.yaml *.yml);;JSON (*.json)")
+        if not path:
+            return
+        try:
+            info = self.model.save_as(path)
+        except (OSError, NetlistTextError) as e:
+            QMessageBox.warning(self, "Save as", f"Couldn't save: {e}")
+            return
+        self.editor.load(info["text"], info["file"], info["can_save"])
+        self.info.update(file=info["file"], can_save=True, text=info["text"])
+        self._title()
+        self._remember(path)
+        self.statusBar().showMessage(f"saved {path}", 5000)
+
+    def _title(self):
+        name = self.info["name"] if self.info else ""
+        f = Path(self.info["file"]).name if self.info and self.info.get("file") else "not saved"
+        self.setWindowTitle(f"{name or 'circuit'} — {f} · hetsim")
+
+    def _recent(self) -> list[str]:
+        v = self.settings.value("recent", [])
+        v = [v] if isinstance(v, str) else list(v or [])
+        return [p for p in v if Path(p).exists()]
+
+    def _remember(self, path):
+        p = str(Path(path).resolve())
+        self.settings.setValue("recent", ([p] + [q for q in self._recent() if q != p])[:RECENT_MAX])
+        self._refresh_recent()
+
+    def _forget(self, path):
+        self.settings.setValue("recent", [q for q in self._recent() if q != str(Path(path).resolve())])
+        self._refresh_recent()
+
+    def _refresh_recent(self):
+        self.recent_menu.clear()
+        paths = self._recent()
+        for p in paths:
+            a = self.recent_menu.addAction(Path(p).name)
+            a.setStatusTip(p)
+            a.triggered.connect(lambda _=False, p=p: self.open_path(p))
+        self.recent_menu.setEnabled(bool(paths))
+
+    def dragEnterEvent(self, e):
+        if e.mimeData().hasUrls() and any(u.isLocalFile() for u in e.mimeData().urls()):
+            e.acceptProposedAction()
+
+    def dropEvent(self, e):
+        files = [u.toLocalFile() for u in e.mimeData().urls() if u.isLocalFile()]
+        if files:
+            self.open_path(files[0])
+
     def export(self):
         name = (self.info["name"] or "circuit").replace(" ", "_") + "-edited.yaml"
         path, _ = QFileDialog.getSaveFileName(self, "Export netlist", name, "YAML (*.yaml *.yml);;JSON (*.json)")
@@ -554,7 +734,7 @@ class MainWindow(QMainWindow):
             self.sch.add_block_at_centre(kind)
 
     def closeEvent(self, e):
-        if self.editor.modified() and QMessageBox.question(
+        if self.model is not None and self.editor.modified() and QMessageBox.question(
                 self, "Quit", "The netlist editor has changes that aren't applied. Quit anyway?") != QMessageBox.StandardButton.Yes:
             e.ignore()
             return
@@ -569,15 +749,18 @@ def _html(text: str) -> str:
 
 
 def run(netlist=None, circuit=None, settings=None, workers: int | None = None) -> int:
-    """Open the desktop viewer for a netlist file or an in-memory Circuit; returns when it closes."""
+    """Open the desktop viewer on a netlist file, an in-memory Circuit, or (neither) the start
+    page; returns when it closes."""
     app = QApplication.instance() or QApplication(sys.argv[:1])
     app.setApplicationName("hetsim")
-    model = ViewerModel.from_file(netlist) if netlist else ViewerModel.from_circuit(circuit, settings)
-    model.sweep_workers = workers
+    model = (ViewerModel.from_file(netlist) if netlist
+             else ViewerModel.from_circuit(circuit, settings) if circuit is not None else None)
+    if model is not None:
+        model.sweep_workers = workers
     if workers is None or workers > 1:   # start the band-sweep workers while the window opens
         from ..analysis import warm_pool
         threading.Thread(target=warm_pool, daemon=True).start()
-    win = MainWindow(model)
+    win = MainWindow(model, workers=workers)
     win.show()
     # Ctrl-C / kill quit like closing the window; the timer lets Python see the signal while Qt waits
     import signal
@@ -595,19 +778,13 @@ def run(netlist=None, circuit=None, settings=None, workers: int | None = None) -
 
 
 def main() -> int:
-    """hetsim-app [netlist.yaml]: the desktop viewer, asking for a netlist when none is given."""
+    """hetsim-app [netlist.yaml]: the desktop viewer; without a netlist it opens on the start page."""
     import argparse
     ap = argparse.ArgumentParser(prog="hetsim-app", description="hetsim desktop viewer")
     ap.add_argument("netlist", nargs="?")
     ap.add_argument("--workers", type=int)
     a = ap.parse_args()
-    netlist = a.netlist
-    if not netlist:
-        app = QApplication.instance() or QApplication(sys.argv[:1])
-        netlist, _ = QFileDialog.getOpenFileName(None, "Open netlist", "", "Netlists (*.yaml *.yml *.json)")
-        if not netlist:
-            return 0
-    return run(netlist, workers=a.workers)
+    return run(a.netlist, workers=a.workers)
 
 
 if __name__ == "__main__":

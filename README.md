@@ -180,8 +180,16 @@ million samples. Tones that share no coarse common grid need a coarser
 ```
 pip install 'hetsim[desktop]'                         # PySide6
 python -m hetsim app examples/vhf_single_conversion.yaml
-hetsim-app                                            # asks for a netlist
+python -m hetsim app                                  # or hetsim-app: opens on the start page
 ```
+
+Opened without a netlist, the app shows a start page with **New circuit**, **Open
+netlist…**, recent files and (in a source checkout) the examples. You can also drop a
+netlist file on the window. A new circuit starts as one source wired to a load; build
+it with **+ Add block** and give it a file with **Save As**. The File menu has New
+(Ctrl+N), Open (Ctrl+O), Open Recent, Save (Ctrl+S, which applies text waiting in the
+netlist editor first), Save As (Ctrl+Shift+S), Export netlist (with the current slider
+values), and Close (back to the start page). Saving as `.json` writes JSON.
 
 A native window (PySide6) with everything the browser viewer below has: parameter
 sliders, schematic editor, spectrum and waveform, band sweeps, RBW trace and phase

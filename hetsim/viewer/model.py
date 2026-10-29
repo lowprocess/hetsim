@@ -35,6 +35,17 @@ CHOICES = {
 BOOLS = {"harmonics"}
 SKIP = {"file", "tones", "freq", "power", "name", "phase", "harmonics_dbc"}
 
+# what File > New starts from: the smallest circuit the model accepts, to build on
+NEW_CIRCUIT = """\
+# New circuit: add blocks with "+ Add block" and wire them port to port.
+name: new circuit
+blocks:
+  src1: {type: source, tones: [{name: SRC1, freq: 10MHz, power: -30}]}
+  load1: {type: load}
+wires:
+  - [src1.out, load1.in]
+"""
+
 # offered when a tone's phase noise is first switched on in the viewer: an example shape to edit
 PN_EXAMPLE = [[1e3, -80.0], [10e3, -95.0], [100e3, -110.0], [1e6, -130.0], [10e6, -145.0]]
 
@@ -546,6 +557,17 @@ class ViewerModel:
     def from_circuit(cls, circuit, settings=None):
         return cls(to_dict(circuit, settings))
 
+    @classmethod
+    def from_text(cls, text: str, base_dir: Path | None = None) -> "ViewerModel":
+        """A model for netlist text not tied to a file (Save As gives it one)."""
+        c, st = from_dict(parse_text(text), base_dir)
+        return cls(to_dict(c, st), None, base_dir, text)
+
+    @classmethod
+    def new(cls) -> "ViewerModel":
+        """A starting circuit for building from scratch: one source wired to a load."""
+        return cls.from_text(NEW_CIRCUIT)
+
     def info(self) -> dict:
         c, _ = from_dict(self.base, self.base_dir)
         ports = [f"{n}.{p}" for n, b in c.blocks.items() for p in b.ports]
@@ -701,6 +723,18 @@ class ViewerModel:
             raise FileChangedError(f"{self.source_path} changed on disk since it was loaded")
         self.source_path.write_text(self.text)
         self.disk_text = self.text
+
+    def save_as(self, path) -> dict:
+        """Write the netlist to a new file (YAML or JSON by its suffix) and make it this model's file.
+        Relative file references (CSV spur tables, Touchstone) resolve from there on."""
+        path = Path(path)
+        fmt = "json" if path.suffix.lower() == ".json" else "yaml"
+        text = self.text if fmt == self.format else dump_text(parse_text(self.text), fmt)
+        path.write_text(text)
+        self.source_path, self.base_dir, self.format = path, path.parent, fmt
+        info = self.set_text(text)
+        self.disk_text = text
+        return info
 
     def netlist(self, edits, resolution=None) -> dict:
         d, _ = apply_edits(self.base, edits, resolution)
