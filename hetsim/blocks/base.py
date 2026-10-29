@@ -39,6 +39,7 @@ class Context:
 class Block:
     kind = "block"
     ports: tuple[str, ...] = ()
+    controls: tuple[str, ...] = ()   # ports that carry no RF (X/Y plot wiring); wired only to each other
     default_in: str | None = None
     default_out: str | None = None
 

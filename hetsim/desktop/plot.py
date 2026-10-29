@@ -231,6 +231,12 @@ class SpectrumPlot(QWidget):
                         self.points.append({"x": pt.x(), "y": pt.y(), "f": f, "p": p, "labels": [pr["label"]],
                                             "kind": "sweep", "at": at, "pr": pr["src"]})
                 qp.drawPath(path)
+                fr = self.s.extra.get("frame")
+                if mine and fr is not None and fr < len(pr["src"]["f"]) and pr["src"]["f"][fr] is not None:
+                    src = pr["src"]   # the animation's step
+                    qp.setBrush(col)
+                    qp.drawEllipse(QPointF(X(src["f"][fr]), Y(src["p"][fr])), 3.5, 3.5)
+                    qp.setBrush(Qt.BrushStyle.NoBrush)
                 if mine:   # worst case over the band: computed steps only
                     src = pr["src"]
                     vals = [(p, i) for i, p in enumerate(src["p"]) if p is not None]
@@ -463,4 +469,112 @@ class WaveformPlot(QWidget):
         qp.drawPath(path)
 
 
-__all__ = ["SpectrumPlot", "ViewState", "WaveformPlot", "fmt_f"]
+
+
+class XYView(QWidget):
+    """An X/Y plot block's trace: the detector reading (y) against the swept tone's frequency (x),
+    one point per band-sweep step, with the animation's current step marked."""
+
+    def __init__(self, state: ViewState, name: str, parent=None):
+        super().__init__(parent)
+        self.s, self.name = state, name
+        self.setMouseTracking(True)
+        self.setMinimumHeight(140)
+        self.font_ = QFont()
+        self.font_.setPixelSize(11)
+        self.pts: list[tuple] = []
+
+    def record(self):
+        for r in (self.s.data or {}).get("xy", []) or []:
+            if r["name"] == self.name:
+                return r
+        return None
+
+    def paintEvent(self, _):
+        qp = QPainter(self)
+        qp.setRenderHint(QPainter.RenderHint.Antialiasing)
+        qp.setFont(self.font_)
+        w, h = self.width(), self.height()
+        qp.fillRect(self.rect(), theme.c("surface-1"))
+        r = self.record()
+        self.pts = []
+        if r is None or not r["x"]:
+            qp.setPen(theme.c("text-muted"))
+            qp.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter,
+                        (r or {}).get("note") or "wire a swept source's sweep port to x and a detector's out to y")
+            return
+        xs, ys = r["x"], r["y"]
+        y0 = self.s.floor
+        valid = [y for y in ys if y is not None]
+        top = max(valid) if valid else y0 + 10
+        y1 = math.ceil((max(top, y0 + 10) + 5) / 10) * 10
+        x0, x1 = min(xs), max(xs)
+        if x1 <= x0:
+            x1 = x0 + 1
+        pl, pr, pt, pb = PAD_L, PAD_R, 12, 36
+        pw, ph = w - pl - pr, h - pt - pb
+        X = lambda f: pl + (f - x0) / (x1 - x0) * pw  # noqa: E731
+        Y = lambda p: pt + (y1 - max(p, y0)) / (y1 - y0) * ph  # noqa: E731
+        ystep = nice_step(y1 - y0, ph / 30)
+        v = math.ceil(y0 / ystep) * ystep
+        while v <= y1:
+            qp.setPen(QPen(theme.c("grid"), 1))
+            qp.drawLine(QPointF(pl, Y(v)), QPointF(w - pr, Y(v)))
+            qp.setPen(theme.c("text-muted"))
+            qp.drawText(QRectF(0, Y(v) - 8, pl - 6, 16), Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, str(round(v)))
+            v += ystep
+        us, uu = unit_for(x1)
+        xstep = nice_step(x1 - x0, pw / 90)
+        v = math.ceil(x0 / xstep) * xstep
+        while v <= x1 + 1e-9:
+            qp.setPen(QPen(theme.c("grid"), 1))
+            qp.drawLine(QPointF(X(v), pt), QPointF(X(v), h - pb))
+            qp.setPen(theme.c("text-muted"))
+            qp.drawText(QRectF(X(v) - 40, h - pb + 4, 80, 14), Qt.AlignmentFlag.AlignHCenter, f"{float(f'{v / us:.8g}'):g}")
+            v += xstep
+        qp.setPen(theme.c("text-secondary"))
+        qp.drawText(QRectF(pl, h - 18, pw, 14), Qt.AlignmentFlag.AlignHCenter, f"{r['x_label']} ({uu})")
+        qp.save()
+        qp.translate(14, pt + ph / 2)
+        qp.rotate(-90)
+        qp.drawText(QRectF(-ph / 2, -8, ph, 16), Qt.AlignmentFlag.AlignHCenter, r["y_label"])
+        qp.restore()
+        qp.save()
+        qp.setClipRect(QRectF(pl, pt, pw, ph))
+        path = QPainterPath()
+        for i, (x, y) in enumerate(zip(xs, ys)):   # nothing in the detector's band: drawn at the floor
+            p = QPointF(X(x), Y(y0 if y is None else y))
+            path.lineTo(p) if i else path.moveTo(p)
+            self.pts.append((p.x(), p.y(), x, y))
+        qp.setPen(QPen(theme.c("series-1"), 1.8))
+        qp.setBrush(Qt.BrushStyle.NoBrush)
+        qp.drawPath(path)
+        if len(xs) <= 80:   # few steps: show each one
+            qp.setPen(Qt.PenStyle.NoPen)
+            qp.setBrush(theme.c("series-1"))
+            for px, py, _, _ in self.pts:
+                qp.drawEllipse(QPointF(px, py), 2.5, 2.5)
+        fr = self.s.extra.get("frame")
+        if fr is not None and fr < len(xs):   # the animation's step
+            qp.setPen(QPen(theme.c("series-2"), 1.5, Qt.PenStyle.DashLine))
+            qp.drawLine(QPointF(X(xs[fr]), pt), QPointF(X(xs[fr]), h - pb))
+            if ys[fr] is not None:
+                qp.setPen(QPen(theme.c("surface-1"), 1.5))
+                qp.setBrush(theme.c("series-2"))
+                qp.drawEllipse(QPointF(X(xs[fr]), Y(ys[fr])), 5, 5)
+        qp.restore()
+
+    def mouseMoveEvent(self, e):
+        best, bd = None, 15 * 15
+        for px, py, x, y in self.pts:
+            d = (px - e.position().x()) ** 2 + (py - e.position().y()) ** 2
+            if d < bd:
+                bd, best = d, (x, y)
+        if best:
+            level = "nothing in the detector's band" if best[1] is None else f"{best[1]:.2f} dBm"
+            QToolTip.showText(e.globalPosition().toPoint(), f"<b>{fmt_f(best[0], 9)}</b><br>{level}", self)
+        else:
+            QToolTip.hideText()
+
+
+__all__ = ["SpectrumPlot", "ViewState", "WaveformPlot", "XYView", "fmt_f"]

@@ -488,3 +488,39 @@ def test_output_grid_fractions():
         output_grid_fractions(c, "B2 - B1", [1e6])
     with pytest.raises(ValueError, match="no tone"):
         output_grid_fractions(c, "LO - XYZ", [1e6])
+
+
+# ---------------------------------------------------------------- detector, X/Y plot, control ports
+def test_detector_reads_peak_and_total():
+    from hetsim.blocks import Detector
+    s = Spectrum()
+    s.add(vec(A=1), 10e6, -20)
+    s.add(vec(B=1), 10.1e6, -20)
+    s.add(vec(C=1), 50e6, 0)
+    assert Detector(fmin="9MHz", fmax="11MHz").read(s) == pytest.approx(-20)
+    assert Detector(fmin="9MHz", fmax="11MHz", detect="total").read(s) == pytest.approx(-20 + 10 * math.log10(2))
+    assert Detector().read(s) == pytest.approx(0)                          # no band: everything
+    assert Detector(fmin="1GHz").read(s) == -math.inf
+    for bad in ({"detect": "rms"}, {"fmin": "2MHz", "fmax": "1MHz"}):
+        with pytest.raises(ValueError):
+            Detector(**bad)
+
+
+def test_control_ports_carry_no_rf():
+    from hetsim.blocks import Detector, XYPlot
+    c = Circuit("t")
+    c.add("src", Source(freq="10MHz", power=-10, name="S"))
+    c.add("det", Detector())
+    c.add("xy", XYPlot())
+    c.connect("src", "det")
+    c.connect("src.sweep", "xy.x")
+    c.connect("det.out", "xy.y")
+    c.add("xy2", XYPlot())
+    c.add("ld", Load())
+    with pytest.raises(ValueError, match="control port"):
+        c.connect("xy2.y", "ld.in")
+    r = c.simulate()
+    assert c["det"].read(r.incident("det.in")) == pytest.approx(-10)
+    assert len(r["src.sweep"]) == 0 and len(r["det.out"]) == 0
+    td = c.simulate_td(resolution=1e6)
+    assert td.spectrum("det.in").peaks(-100) == [] and td.incident_spectrum("det.in").power_at(10e6) == pytest.approx(-10, abs=0.01)

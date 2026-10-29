@@ -14,14 +14,14 @@ from pathlib import Path
 from PySide6.QtCore import QSettings, QSignalBlocker, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QKeySequence, QShortcut, QTextCursor
 from PySide6.QtWidgets import (QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QHBoxLayout, QLabel,
-                               QLineEdit, QMainWindow, QMessageBox, QPushButton, QSplitter, QStackedWidget,
-                               QToolBar, QVBoxLayout, QWidget)
+                               QLineEdit, QMainWindow, QMessageBox, QPushButton, QSlider, QSpinBox, QSplitter,
+                               QStackedWidget, QTabWidget, QToolBar, QVBoxLayout, QWidget)
 
 from ..viewer.model import FileChangedError, NetlistTextError, ViewerModel, dump_text
 from . import theme
 from .editor import NetlistEditor
 from .params import ParamPanel, carry_values, parse_f
-from .plot import SpectrumPlot, ViewState, WaveformPlot, fmt_f
+from .plot import SpectrumPlot, ViewState, WaveformPlot, XYView, fmt_f
 from .schematic import SchematicView
 from .sim import SimRunner
 from .start import StartPage
@@ -156,6 +156,37 @@ class MainWindow(QMainWindow):
         self.sw_pick.setToolTip("Show one product's track (or click a track on the plot; Esc shows all)")
         self.sw_pick.activated.connect(lambda i: self.set_sw_sel(self.sw_pick.itemData(i)))
         self.swbar.addWidget(self.sw_pick)
+        # animated sweep: step the swept tones through the sweep, a full simulation per frame
+        self.swbar.addSeparator()
+        self.play = QPushButton("▶")
+        self.play.setCheckable(True)
+        self.play.setFixedWidth(34)
+        self.play.setToolTip("Animate the sweep: the swept tones step through it and the spectrum follows")
+        self.play.toggled.connect(self._play)
+        self.stop_btn = QPushButton("■")
+        self.stop_btn.setFixedWidth(34)
+        self.stop_btn.setToolTip("Stop and go back to the tones' own frequencies")
+        self.stop_btn.clicked.connect(self.stop_animation)
+        self.frame_slider = QSlider(Qt.Orientation.Horizontal)
+        self.frame_slider.setMinimumWidth(160)
+        self.frame_slider.setToolTip("Sweep step shown (drag to scrub)")
+        self.frame_slider.valueChanged.connect(self._scrub)
+        self.fps = QSpinBox()
+        self.fps.setRange(1, 30)
+        self.fps.setValue(8)
+        self.fps.setSuffix(" fps")
+        self.fps.setToolTip("Animation speed (frames per second, at most; each frame is a simulation)")
+        self.fps.valueChanged.connect(lambda v: self.anim.setInterval(int(1000 / v)))
+        self.loop = QCheckBox("loop")
+        self.loop.setChecked(True)
+        self.frame_label = QLabel()
+        for w in (self.play, self.stop_btn, self.frame_slider, self.fps, self.loop, self.frame_label):
+            self.swbar.addWidget(w)
+        self.anim = QTimer(self)
+        self.anim.setInterval(int(1000 / self.fps.value()))
+        self.anim.timeout.connect(self._tick)
+        self.frame = None          # sweep step shown, or None: the tones' own frequencies
+        self.frame_busy = False
         self.swbar.setVisible(False)
         for a in self.sw_out_acts:
             a.setVisible(False)
@@ -216,13 +247,21 @@ class MainWindow(QMainWindow):
         self.plot.trackClicked.connect(lambda lab: self.set_sw_sel(None if lab == self.vs.sw_sel else lab))
         right.addWidget(self.plot)
         self.wave = WaveformPlot(self.vs)
+        self.xy_tabs = QTabWidget()
+        self.xy_tabs.setDocumentMode(True)
+        self.xy_tabs.setVisible(False)
+        self.xy_title = QLabel()
+        self.xy_title.setStyleSheet("color: gray; padding-right: 8px")
+        self.xy_tabs.setCornerWidget(self.xy_title, Qt.Corner.TopRightCorner)
+        self.xy_tabs.currentChanged.connect(lambda _: self._update_xy())
+        right.addWidget(self.xy_tabs)
         right.addWidget(self.wave)
         self.msgs = QLabel()
         self.msgs.setWordWrap(True)
         self.msgs.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.msgs.setContentsMargins(8, 2, 8, 2)
         right.addWidget(self.msgs)
-        right.setSizes([290, 400, 130, 40])
+        right.setSizes([290, 400, 220, 130, 40])
         right.setStretchFactor(1, 1)
         split.addWidget(right)
         split.setSizes([360, 1040])
@@ -334,21 +373,34 @@ class MainWindow(QMainWindow):
             "min_dbm": self.vs.floor - (max(0.0, 10 * math.log10(rbw / self.vs.resolution)) + 10 if rbw else 0),
             "sweep_out": self.vs.sw_out and {"anchor": self.vs.sw_sel, "fmin": self.vs.sw_out[0],
                                              "fmax": self.vs.sw_out[1], "points": self.sweep_pts},
+            # paused or playing an animation: the swept tones sit at that step
+            "tone_freqs": self._frame_freqs(),
         }
 
-    def simulate(self):
+    def simulate(self, frame_only: bool = False):
+        req = self.request()
+        if frame_only:   # an animation frame: keep the sweep and X/Y plots, only move the tones
+            req["sweep_frame"] = True
+            self.frame_busy = True
         if self.sync:
-            self.on_result(self.runner.run_now(self.request()), None)
+            self.on_result(self.runner.run_now(req), req)
         else:
-            self.runner.submit(self.request())
+            self.runner.submit(req)
 
     def on_result(self, d: dict, req):
+        if req and req.get("sweep_frame"):
+            self.frame_busy = False
+            if self.vs.data:   # a frame doesn't recompute these
+                for k in ("sweep", "xy"):
+                    if k in self.vs.data:
+                        d.setdefault(k, self.vs.data[k])
         if d.get("error"):
             self.show_msgs([("err", d["error"])])
             return
         self.vs.data = d
         self.vs.extra["pn_on"] = self.pn_on
-        self.panel.apply_snapped(d.get("snapped"))
+        if not (req and req.get("tone_freqs")):   # a frame's tone positions must not stick to the sliders
+            self.panel.apply_snapped(d.get("snapped"))
         self.swbar.setVisible(bool(d.get("sweep")))
         self.pn_act.setVisible(bool(d.get("has_pn")))
         msgs = [("warn", w) for w in (d.get("warnings") or "").split("\n") if w]
@@ -364,6 +416,9 @@ class MainWindow(QMainWindow):
         plan = d.get("plan")
         self.status.setText((plan.split(" (products")[0] + " · " if plan else "tone solver · ") + f"{d['elapsed_ms']} ms")
         self._fill_pick()
+        self.sch.refresh(readings=d.get("detectors", {}))
+        self._update_frames()
+        self._update_xy()
         self.plot.update()
         self.wave.update()
 
@@ -477,6 +532,98 @@ class MainWindow(QMainWindow):
             self.simulate()   # the selected track anchors the output grid
         self.plot.update()
 
+    # ------------------------------------------------------------ animated sweep, X/Y plots
+    def _steps(self) -> list:
+        sw = self.vs.data and self.vs.data.get("sweep")
+        return sw["steps"] if sw else []
+
+    def _frame_freqs(self):
+        steps = self._steps()
+        return steps[self.frame] if self.frame is not None and self.frame < len(steps) else None
+
+    def _update_frames(self):
+        steps = self._steps()
+        if not steps:
+            if self.frame is not None:
+                self.stop_animation(resimulate=False)
+            return
+        with QSignalBlocker(self.frame_slider):
+            self.frame_slider.setRange(0, len(steps) - 1)
+            if self.frame is not None:
+                self.frame = min(self.frame, len(steps) - 1)
+                self.frame_slider.setValue(self.frame)
+        self.vs.extra["frame"] = self.frame
+        if self.frame is None:
+            self.frame_label.setText("")
+        else:
+            at = ", ".join(f"{k} {fmt_f(v, 7)}" for k, v in steps[self.frame].items())
+            self.frame_label.setText(f" step {self.frame + 1}/{len(steps)}: {at}")
+
+    def _play(self, on: bool):
+        self.play.setText("⏸" if on else "▶")
+        if on and self._steps():
+            if self.frame is None:
+                self.frame = -1
+            self.anim.start()
+        else:
+            self.anim.stop()
+
+    def _tick(self):
+        steps = self._steps()
+        if not steps:
+            self.play.setChecked(False)
+            return
+        if self.frame_busy:   # the last frame is still simulating: drop this tick
+            return
+        nxt = (self.frame if self.frame is not None else -1) + 1
+        if nxt >= len(steps):
+            if not self.loop.isChecked():
+                self.play.setChecked(False)
+                return
+            nxt = 0
+        self.frame = nxt
+        self._update_frames()
+        self.simulate(frame_only=True)
+
+    def _scrub(self, v: int):
+        self.play.setChecked(False)
+        self.frame = v
+        self._update_frames()
+        self.simulate(frame_only=True)
+
+    def stop_animation(self, resimulate: bool = True):
+        self.anim.stop()
+        with QSignalBlocker(self.play):
+            self.play.setChecked(False)
+            self.play.setText("▶")
+        was, self.frame = self.frame, None
+        self.frame_busy = False
+        self.vs.extra["frame"] = None
+        self.frame_label.setText("")
+        if resimulate and was is not None and self.model is not None:
+            self.simulate()
+
+    def _update_xy(self):
+        recs = (self.vs.data or {}).get("xy") or []
+        names = [r["name"] for r in recs]
+        have = [self.xy_tabs.tabText(i) for i in range(self.xy_tabs.count())]
+        if names != have:
+            with QSignalBlocker(self.xy_tabs):   # adding tabs would call back in here
+                while self.xy_tabs.count():
+                    w = self.xy_tabs.widget(0)
+                    self.xy_tabs.removeTab(0)
+                    w.deleteLater()
+                for n in names:
+                    self.xy_tabs.addTab(XYView(self.vs, n), n)
+        self.xy_tabs.setVisible(bool(names))
+        for i, r in enumerate(recs):
+            self.xy_tabs.setTabToolTip(i, r.get("title") or r.get("note") or "")
+            self.xy_tabs.setTabText(i, r["name"])
+            self.xy_tabs.widget(i).update()
+        if recs:
+            t = recs[min(self.xy_tabs.currentIndex(), len(recs) - 1)]
+            self.xy_title.setText(t.get("title") or t.get("note") or "")
+
     def _fill_pick(self):
         sw = self.vs.data and self.vs.data.get("sweep")
         with QSignalBlocker(self.sw_pick):
@@ -585,6 +732,7 @@ class MainWindow(QMainWindow):
         if model.sweep_workers is None:
             model.sweep_workers = self.workers
         self.model = self.runner.model = model
+        self.stop_animation(resimulate=False)
         self.info, self.undo, self.sliders_dirty = None, [], False
         self.vs.data, self.vs.view, self.vs.sw_sel = None, None, None
         self.vs.sw_out = None

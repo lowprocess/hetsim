@@ -129,15 +129,18 @@ COL_PITCH, ROW_PITCH = 150.0, 130.0   # auto-layout grid: room for a block's nam
 
 
 def port_layout(ports: list[str]) -> dict[str, tuple[float, float, int, int]]:
-    """Port positions relative to a block: inputs left, outputs right, LO on top.
-    Returns {port: (x, y, dx, dy)} with (dx, dy) the direction a wire leaves in."""
-    left, right, top = [], [], []
+    """Port positions relative to a block: inputs left, outputs right, LO on top, a source's
+    sweep (control) port at the bottom. Returns {port: (x, y, dx, dy)} with (dx, dy) the
+    direction a wire leaves in."""
+    left, right, top, bottom = [], [], [], []
     for p in ports:
         if p == "lo":
             top.append(p)
+        elif p == "sweep":
+            bottom.append(p)
         elif p in ("out", "if", "a", "b"):
             right.append(p)
-        elif p in ("in", "rf", "sum"):
+        elif p in ("in", "rf", "sum", "x", "y"):
             left.append(p)
         else:
             (left if len(left) <= len(right) else right).append(p)
@@ -148,6 +151,8 @@ def port_layout(ports: list[str]) -> dict[str, tuple[float, float, int, int]]:
         out[p] = (float(BW), BH * (i + 1) / (len(right) + 1), 1, 0)
     for i, p in enumerate(top):
         out[p] = (BW * (i + 1) / (len(top) + 1), 0.0, 0, -1)
+    for i, p in enumerate(bottom):
+        out[p] = (BW * (i + 1) / (len(bottom) + 1), float(BH), 0, 1)
     return out
 
 
@@ -219,6 +224,15 @@ def auto_layout(blocks: list[dict], wires: list) -> dict[str, tuple[float, float
             s = next((q for q in succ[n] if q in row), None)
             place(n, row[s] if s is not None else -1)
     return {n: (col[n] * COL_PITCH, row[n] * ROW_PITCH) for n in names}
+
+
+def route_bus(a: tuple, b: tuple, bus_y: float, a_gap: float, b_gap: float) -> list[tuple[float, float]]:
+    """A control wire kept clear of the blocks: out of `a`, across to the gap between columns
+    at x = a_gap, down to a bus line below the circuit, along it to x = b_gap, and up into `b`."""
+    s = 12
+    a1 = (a[0] + a[2] * s, a[1] + a[3] * s)
+    b1 = (b[0] + b[2] * s, b[1] + b[3] * s)
+    return [(a[0], a[1]), a1, (a_gap, a1[1]), (a_gap, bus_y), (b_gap, bus_y), (b_gap, b1[1]), b1, (b[0], b[1])]
 
 
 def route(a: tuple, b: tuple) -> list[tuple[float, float]]:

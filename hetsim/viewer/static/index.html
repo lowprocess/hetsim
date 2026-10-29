@@ -1086,17 +1086,20 @@ const snap = (v) => Math.round(v / GRID) * GRID;
 
 function portLayout(b) {
   // inputs left, outputs right, LO on top; returns {port: {x, y, dx, dy}} relative to the block
-  const left = [], right = [], top = [];
+  // a source's sweep port (control, for X/Y plots in the desktop app) at the bottom
+  const left = [], right = [], top = [], bottom = [];
   for (const p of b.ports) {
     if (p === "lo") top.push(p);
+    else if (p === "sweep") bottom.push(p);
     else if (["out", "if", "a", "b"].includes(p)) right.push(p);
-    else if (["in", "rf", "sum"].includes(p)) left.push(p);
+    else if (["in", "rf", "sum", "x", "y"].includes(p)) left.push(p);
     else (left.length <= right.length ? left : right).push(p);
   }
   const out = {};
   left.forEach((p, i) => { out[p] = { x: 0, y: (BH * (i + 1)) / (left.length + 1), dx: -1, dy: 0 }; });
   right.forEach((p, i) => { out[p] = { x: BW, y: (BH * (i + 1)) / (right.length + 1), dx: 1, dy: 0 }; });
   top.forEach((p, i) => { out[p] = { x: (BW * (i + 1)) / (top.length + 1), y: 0, dx: 0, dy: -1 }; });
+  bottom.forEach((p, i) => { out[p] = { x: (BW * (i + 1)) / (bottom.length + 1), y: BH, dx: 0, dy: 1 }; });
   return out;
 }
 
@@ -1304,7 +1307,8 @@ function drawSch() {
     for (const [p, l] of Object.entries(pl)) {
       if (l.dx < 0) leads.push(`M${l.x} ${l.y} H${sym.inset.l}`);
       else if (l.dx > 0) leads.push(`M${l.x} ${l.y} H${BW - sym.inset.r}`);
-      else leads.push(`M${l.x} ${l.y} V${sym.inset.t}`);
+      else if (l.dy < 0) leads.push(`M${l.x} ${l.y} V${sym.inset.t}`);
+      else leads.push(`M${l.x} ${l.y} V${BH - 6}`);
     }
     out.push(`<path class="lead" d="${leads.join(" ")}"/>`, sym.svg);
     out.push(`<text class="bname" x="${BW / 2}" y="${BH + 15}">${esc(b.name)}</text>`);

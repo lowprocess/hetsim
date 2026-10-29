@@ -27,15 +27,13 @@ blocks:
   lo1:
     type: source
     tones:
-    - name: LO1
-      freq: 4222000000
-      power: 7
-      band:
-      - 3200000000
-      - 6400000000
-      mode: sweep
-      points: 32
-      spacing: log
+      - name: LO1
+        freq: 4222000000
+        power: 7
+        band: [3200000000, 6400000000]
+        mode: sweep
+        points: 32
+        spacing: log
   mix1:
     type: mixer
     conversion_loss_db: 6.5
@@ -56,12 +54,6 @@ blocks:
     bw: 100000000
     insertion_loss_db: 2
     max_rejection_db: 80
-  if1amp:
-    type: amplifier
-    gain_db: 12
-    oip3_dbm: 30
-    reverse_isolation_db: 30
-    harmonics: false
   lo2:
     type: source
     tones:
@@ -94,25 +86,34 @@ blocks:
     oip3_dbm: 25
     reverse_isolation_db: 30
     harmonics: true
+  amp1: {type: amplifier, gain_db: 10}
+  amp2: {type: amplifier, gain_db: 10}
+  amp3: {type: amplifier, gain_db: 10}
 settings: {}
 wires:
-- - ant.out
-  - lpf.in
-- - lpf.out
-  - lna.in
-- - lna.out
-  - mix1.rf
-- - mix1.if
-  - roof.in
-- - roof.out
-  - if1amp.in
-- - if1amp.out
-  - mix2.rf
-- - mix2.if
-  - iff.in
-- - iff.out
-  - ifamp.in
-- - lo1.out
-  - mix1.lo
-- - lo2.out
-  - mix2.lo
+  - [ant.out, lpf.in]
+  - [lpf.out, lna.in]
+  - [iff.out, ifamp.in]
+  - [lo1.out, mix1.lo]
+  - [lo2.out, mix2.lo]
+  - [amp1.out, roof.in]
+  - [mix2.if, amp2.in]
+  - [amp2.out, iff.in]
+  - [roof.out, amp3.in]
+  - [amp3.out, mix2.rf]
+  - [lna.out, mix1.rf]
+  - [mix1.if, amp1.in]
+layout:
+  ant: {x: 0, y: 0}
+  lpf: {x: 140, y: 0}
+  lna: {x: 300, y: 0}
+  lo1: {x: 340, y: -100}
+  mix1: {x: 420, y: 0}
+  roof: {x: 640, y: 0}
+  lo2: {x: 780, y: -100}
+  mix2: {x: 860, y: 0}
+  iff: {x: 1050, y: 0}
+  ifamp: {x: 1180, y: 0}
+  amp1: {x: 540, y: 0}
+  amp2: {x: 960, y: 0}
+  amp3: {x: 740, y: 0}

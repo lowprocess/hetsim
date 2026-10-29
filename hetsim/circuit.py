@@ -94,6 +94,11 @@ class Circuit:
                                  f"{self.wires[p][0]}.{self.wires[p][1]} (use a splitter to branch)")
         if pa == pb:
             raise ValueError("cannot connect a port to itself")
+        ca, cb = (p[1] in self.blocks[p[0]].controls for p in (pa, pb))
+        if ca != cb:
+            ctl, rf = (pa, pb) if ca else (pb, pa)
+            raise ValueError(f"{ctl[0]}.{ctl[1]} is a control port (for an X/Y plot); it can't take the RF port "
+                             f"{rf[0]}.{rf[1]}")
         self.wires[pa] = pb
         self.wires[pb] = pa
 

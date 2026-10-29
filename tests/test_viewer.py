@@ -379,3 +379,42 @@ def test_phase_noise_parameter_round_trip(tmp_path):
     r = m.simulate({"probe": "mix.if", "solver": "tone", "min_dbm": -180, "rbw": 10e3,
                     "params": {"lo": {"tones.0.phase_noise": prof}}})
     assert r["has_pn"] and r["pn"]["LO"] == prof and r["skirts"]
+
+
+def _xy_model(tmp_path):
+    text = VHF.read_text()
+    text = text.replace("lo:    {type: source, name: LO, freq: 110.7MHz, power: 7, harmonics_dbc: [-30, -40]}",
+                        "lo:    {type: source, tones: [{name: LO, freq: 110.7MHz, power: 7, band: [108.7MHz, 112.7MHz], "
+                        "mode: sweep, points: 81}]}")
+    text = text.replace("  ifamp: {type: amplifier, gain_db: 20, oip3_dbm: 25}",
+                        "  ifamp: {type: amplifier, gain_db: 20, oip3_dbm: 25}\n"
+                        "  det1:  {type: detector, fmin: 10.6MHz, fmax: 10.8MHz}\n  xy1:   {type: xyplot}")
+    text = text.replace("chain: [ant, pre, lna, mix, iff, ifamp]", "chain: [ant, pre, lna, mix, iff, ifamp, det1]")
+    text = text.replace("  - [lo.out, mix.lo]", "  - [lo.out, mix.lo]\n  - [lo.sweep, xy1.x]\n  - [det1.out, xy1.y]")
+    f = tmp_path / "xy.yaml"
+    f.write_text(text)
+    m = ViewerModel.from_file(f)
+    m.sweep_workers = 1
+    return m
+
+
+def test_xy_plot_of_a_detector_over_the_sweep(tmp_path):
+    m = _xy_model(tmp_path)
+    info = m.info()
+    assert not any(p.endswith((".sweep", ".x", ".y")) or p == "det1.out" for p in info["ports"])   # not probes
+    assert {b["name"]: b["controls"] for b in info["schematic"]["blocks"]}["xy1"] == ["x", "y"]
+    req = {"probe": "ifamp.out", "solver": "tone", "min_dbm": -160, "params": {}}
+    r = m.simulate(req)
+    assert r["detectors"]["det1"] == pytest.approx(-43.06, abs=0.05)       # the image: IMG - LO at 10.7 MHz
+    xy = r["xy"][0]
+    assert xy["note"] is None and len(xy["x"]) == len(xy["y"]) == 81 and xy["x"][0] == 108.7e6
+    peak_x = xy["x"][max(range(81), key=lambda i: xy["y"][i] if xy["y"][i] is not None else -999)]
+    assert 111.0e6 <= peak_x <= 111.6e6                                  # the -30 dBm blockers B1/B2 tuned in
+    f = m.simulate({**req, "sweep_frame": True, "tone_freqs": {"LO": 111.1e6}})
+    assert "sweep" not in f and "xy" not in f and f["detectors"]["det1"] == pytest.approx(-3.0, abs=0.1)
+    m.edit({"op": "disconnect", "a": "xy1.y"})
+    assert "wire y" in m.simulate(req)["xy"][0]["note"]
+    with pytest.raises(NetlistTextError, match="control port"):
+        m.edit({"op": "connect", "a": "lo.sweep", "b": "mix.rf"})
+    added = m.edit({"op": "add", "type": "detector", "x": 0, "y": 300})["added"]
+    assert added == "det2" and m.base["blocks"]["det2"]["detect"] == "peak"

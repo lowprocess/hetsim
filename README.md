@@ -205,6 +205,38 @@ critical values under its name (an amplifier's gain, OIP3 and P1dB, a mixer's co
 loss, LO drive and IIP3, a filter's band, family and order, a source's tones). They follow
 the sliders.
 
+**Animated sweep.** With a tone in sweep mode (on an RF source or an LO), the sweep toolbar
+plays the sweep: ▶ steps the swept tones through it, a full simulation per frame, and the
+spectrum, the waveform and the detector readings follow. The current step is marked on
+every band-sweep track and X/Y trace. Drag the step slider to scrub. Set the speed in
+frames per second and choose whether it loops; ■ returns to the tones' own frequencies.
+Frames reuse the last sweep rather than recomputing it.
+
+**Detector and X/Y plot** (new block types, available from **+ Add block**):
+- `detector` terminates whatever arrives at `in` and reads its power, over an optional
+  `fmin`–`fmax` band. `detect: peak` gives the strongest single product (a peak
+  detector); `total` gives the power sum (a power meter). The reading shows under the
+  block.
+- `xyplot` draws one detector's reading against one swept tone's frequency, a point
+  per band-sweep step, in its own tab under the spectrum.
+- Wiring uses **control ports**, drawn as diamonds with dashed wires: wire a source's
+  `sweep` port to the plot's `x`, and the detector's `out` to its `y`. Control ports
+  carry no RF, connect only to each other, and aren't offered as probe points.
+
+With the LO swept and a detector behind the IF filter, the X/Y plot is a swept
+spectrum analyser's display: a plateau wherever an input (wanted, image, blocker or
+spur) converts into the detector's band.
+
+```yaml
+  det1: {type: detector, detect: peak, fmin: 10.6MHz, fmax: 10.8MHz}
+  xy1:  {type: xyplot}
+chain: [ant, pre, lna, mix, iff, ifamp, det1]
+wires:
+  - [lo.out, mix.lo]
+  - [lo.sweep, xy1.x]
+  - [det1.out, xy1.y]
+```
+
 From Python: `from hetsim.desktop import run; run(circuit=c)`.
 
 ## Live viewer

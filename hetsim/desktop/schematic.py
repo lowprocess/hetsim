@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsPat
 from . import theme
 from .params import visible
 from .plot import fmt_f
-from .tracks import BH, BW, auto_layout, port_layout, route
+from .tracks import BH, BW, COL_PITCH, auto_layout, port_layout, route, route_bus
 
 GRID = 20
 LABEL_W = 146   # width of the name and detail lines under a block (the layout's column pitch is 150)
@@ -38,29 +38,29 @@ def _tilde(path: QPainterPath, y: float):
 def symbol(kind: str, response: str | None):
     """(body path, glyph path, glyph text, insets) for a block type; body drawn filled."""
     body, glyph, text = QPainterPath(), QPainterPath(), None
-    boxed = {"l": 10, "r": 10, "t": 4}
+    boxed = {"l": 10, "r": 10, "t": 4, "b": 44}
     if kind == "amplifier":
         body.moveTo(14, 6)
         body.lineTo(52, 24)
         body.lineTo(14, 42)
         body.closeSubpath()
-        return body, glyph, None, {"l": 14, "r": 12, "t": 0}
+        return body, glyph, None, {"l": 14, "r": 12, "t": 0, "b": 42}
     if kind == "mixer":
         body.addEllipse(QPointF(32, 24), 17, 17)
         glyph.moveTo(20, 12)
         glyph.lineTo(44, 36)
         glyph.moveTo(44, 12)
         glyph.lineTo(20, 36)
-        return body, glyph, None, {"l": 15, "r": 15, "t": 7}
+        return body, glyph, None, {"l": 15, "r": 15, "t": 7, "b": 41}
     if kind == "source":
         body.addEllipse(QPointF(26, 24), 16, 16)
         glyph.moveTo(16, 24)
         glyph.quadTo(21, 14, 26, 24)
         glyph.quadTo(31, 34, 36, 24)
-        return body, glyph, None, {"l": 10, "r": 22, "t": 8}
+        return body, glyph, None, {"l": 10, "r": 22, "t": 8, "b": 39}
     if kind == "load":
         body.addRoundedRect(QRectF(12, 8, 40, 32), 3, 3)
-        return body, glyph, "50 Ω", {"l": 12, "r": 12, "t": 8}
+        return body, glyph, "50 Ω", {"l": 12, "r": 12, "t": 8, "b": 40}
     body.addRoundedRect(QRectF(10, 4, 44, 40), 3, 3)
     if kind in ("filter", "ideal_filter"):
         r = "bandpass" if kind == "ideal_filter" else (response or "bandpass")
@@ -79,6 +79,24 @@ def symbol(kind: str, response: str | None):
         glyph.lineTo(54, 16)
         glyph.moveTo(26, 24)
         glyph.lineTo(54, 32)
+    elif kind == "detector":   # a diode: what a power detector is
+        glyph.moveTo(20, 15)
+        glyph.lineTo(20, 33)
+        glyph.lineTo(35, 24)
+        glyph.closeSubpath()
+        glyph.moveTo(35, 15)
+        glyph.lineTo(35, 33)
+        glyph.moveTo(10, 24)
+        glyph.lineTo(20, 24)
+        glyph.moveTo(35, 24)
+        glyph.lineTo(44, 24)
+    elif kind == "xyplot":     # axes and a trace
+        glyph.moveTo(16, 10)
+        glyph.lineTo(16, 38)
+        glyph.lineTo(48, 38)
+        glyph.moveTo(18, 34)
+        glyph.cubicTo(24, 34, 26, 14, 30, 14)
+        glyph.cubicTo(34, 14, 36, 30, 46, 22)
     elif kind == "sparam":
         text = "S21"
     else:
@@ -92,8 +110,9 @@ def _param_of(groups, name, path):
     return p["value"] if p and (not p["optional"] or p["enabled"]) and visible(g, p) else None
 
 
-def details(b: dict, groups: list) -> list[str]:
-    """A block's critical values, a few short lines for under its name; they follow the sliders."""
+def details(b: dict, groups: list, readings: dict | None = None) -> list[str]:
+    """A block's critical values, a few short lines for under its name; they follow the sliders.
+    `readings` holds the detectors' latest values (dBm, None when nothing is in their band)."""
     v = lambda path: _param_of(groups, b["name"], path)  # noqa: E731
     n = lambda x: f"{float(x):.1f}".rstrip("0").rstrip(".")  # noqa: E731
     f = lambda x: fmt_f(x, 4)  # noqa: E731
@@ -134,6 +153,12 @@ def details(b: dict, groups: list) -> list[str]:
                           else f"{f(v('f0'))} / {f(v('bw'))}" if v("f0") else "")
         order = join(f"{v('family')} {v('order')}" if v("family") else None, opt("insertion_loss_db", "IL", "dB"))
         return [x for x in (band, order) if x]
+    if t == "detector":
+        lo, hi = v("fmin"), v("fmax")
+        band = rng(lo, hi) if lo is not None and hi is not None else "all" if lo is None and hi is None else \
+            f"≥ {f(lo)}" if lo is not None else f"≤ {f(hi)}"
+        r = (readings or {}).get(b["name"], "")
+        return [f"{v('detect')} · {band}", "" if r == "" else "— dBm" if r is None else f"{r:.1f} dBm"]
     if t == "splitter":
         return [join(opt("excess_loss_db", "+", "dB"), opt("isolation_db", "iso", "dB"))]
     if t == "source":
@@ -155,9 +180,11 @@ def details(b: dict, groups: list) -> list[str]:
 
 
 class PortItem(QGraphicsEllipseItem):
-    def __init__(self, view: "SchematicView", ref: str, pos, parent):
+    """A port: a circle for RF, a diamond for a control port (X/Y plot wiring)."""
+
+    def __init__(self, view: "SchematicView", ref: str, pos, parent, control: bool = False):
         super().__init__(-4, -4, 8, 8, parent)
-        self.view, self.ref, self.dir = view, ref, pos[2:]
+        self.view, self.ref, self.dir, self.control = view, ref, pos[2:], control
         self.setPos(pos[0], pos[1])
         self.setAcceptHoverEvents(True)
         self.setCursor(Qt.CursorShape.CrossCursor)
@@ -172,6 +199,19 @@ class PortItem(QGraphicsEllipseItem):
         col = theme.c("series-2") if probe else theme.c("accent") if self.hot else theme.c("text-secondary")
         self.setPen(QPen(col, 1.5))
         self.setBrush(QBrush(col if (probe or wired or self.hot) else theme.c("surface-2")))
+
+    def paint(self, qp, opt, widget=None):
+        if not self.control:
+            return super().paint(qp, opt, widget)
+        qp.setPen(self.pen())
+        qp.setBrush(self.brush())
+        d = QPainterPath()
+        d.moveTo(0, -5)
+        d.lineTo(5, 0)
+        d.lineTo(0, 5)
+        d.lineTo(-5, 0)
+        d.closeSubpath()
+        qp.drawPath(d)
 
     def hoverEnterEvent(self, e):
         self.hot = True
@@ -204,8 +244,9 @@ class BlockItem(QGraphicsItem):
         self.setZValue(1)
         self.ports = {}
         self.layout = port_layout(b["ports"])
+        controls = set(b.get("controls", []))
         for p, pos in self.layout.items():
-            self.ports[p] = PortItem(view, f"{self.name}.{p}", pos, self)
+            self.ports[p] = PortItem(view, f"{self.name}.{p}", pos, self, p in controls)
         self.start = None
         self.font_b, self.font_s = QFont(), QFont()
         self.font_b.setPixelSize(12)
@@ -232,8 +273,10 @@ class BlockItem(QGraphicsItem):
                 lead.lineTo(inset["l"], y)
             elif dx > 0:
                 lead.lineTo(BW - inset["r"], y)
-            else:
+            elif dy < 0:
                 lead.lineTo(x, inset["t"])
+            else:
+                lead.lineTo(x, inset["b"])
         qp.setPen(QPen(theme.c("text-secondary"), 1.5))
         qp.drawPath(lead)
         qp.setPen(QPen(line, 2.5 if sel else 1.5))
@@ -253,7 +296,7 @@ class BlockItem(QGraphicsItem):
         qp.setFont(self.font_s)
         qp.setPen(theme.c("text-muted"))
         fm = qp.fontMetrics()
-        for k, line in enumerate(details(self.b, self.view.groups)[:3]):
+        for k, line in enumerate(details(self.b, self.view.groups, self.view.readings)[:3]):
             text = fm.elidedText(line, Qt.TextElideMode.ElideRight, LABEL_W - 6)
             qp.drawText(QRectF(x0, BH + 16 + 13 * k, LABEL_W, 15), Qt.AlignmentFlag.AlignHCenter, text)
         if len(self.b["ports"]) > 2:   # name the ports of mixers and splitters
@@ -303,9 +346,11 @@ class BlockItem(QGraphicsItem):
 
 
 class WireItem(QGraphicsPathItem):
-    def __init__(self, a: str, b: str):
+    """A wire; dashed when it joins control ports (X/Y plot wiring, no RF)."""
+
+    def __init__(self, a: str, b: str, control: bool = False):
         super().__init__()
-        self.a, self.b = a, b
+        self.a, self.b, self.control = a, b, control
         self.setFlags(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setZValue(0)
@@ -317,7 +362,8 @@ class WireItem(QGraphicsPathItem):
 
     def paint(self, qp, opt, widget=None):
         self.setPen(QPen(theme.c("accent") if self.isSelected() else theme.c("text-secondary"),
-                         2.5 if self.isSelected() else 1.5))
+                         2.5 if self.isSelected() else 1.5,
+                         Qt.PenStyle.DashLine if self.control else Qt.PenStyle.SolidLine))
         qp.setPen(self.pen())
         qp.setBrush(Qt.BrushStyle.NoBrush)
         qp.drawPath(self.path())
@@ -344,6 +390,7 @@ class SchematicView(QGraphicsView):
         self.wires: list[WireItem] = []
         self.wired: set[str] = set()
         self.groups: list = []
+        self.readings: dict = {}   # detectors' latest values, shown under them
         self.sc: dict = {}
         self.probe = None
         self.incident = False
@@ -393,17 +440,20 @@ class SchematicView(QGraphicsView):
             self.scene_.addItem(it)
             self.blocks[b["name"]] = it
             it.setSelected(b["name"] in sel)
+        ctl = {f"{b['name']}.{p}" for b in self.sc.get("blocks", []) for p in b.get("controls", [])}
         for a, b in self.sc.get("wires", []):
-            w = WireItem(a, b)
+            w = WireItem(a, b, a in ctl)
             self.scene_.addItem(w)
             self.wires.append(w)
         blocker.unblock()
         self.reroute()
 
-    def refresh(self, groups=None, probe=None, incident=None):
+    def refresh(self, groups=None, probe=None, incident=None, readings=None):
         """Summaries follow the sliders; the probe marker follows the port."""
         if groups is not None:
             self.groups = groups
+        if readings is not None:
+            self.readings = readings
         if probe is not None:
             self.probe = probe
         if incident is not None:
@@ -421,11 +471,25 @@ class SchematicView(QGraphicsView):
         x, y, dx, dy = it.layout[port]
         return (it.pos().x() + x, it.pos().y() + y, dx, dy)
 
+    def _clear_between(self, a, b) -> bool:
+        """Side by side on one row with no block in between: a control wire can go straight."""
+        if a[2] <= 0 or b[2] >= 0 or abs(a[1] - b[1]) > BH or b[0] <= a[0]:
+            return False
+        lo, hi = a[0], b[0]
+        return not any(lo < x + BW / 2 < hi and abs(y + BH / 2 - a[1]) < BH for x, y in self.pos.values())
+
     def reroute(self):
+        bus_y = max((y for _, y in self.pos.values()), default=0) + BH + 64   # below the details lines
         for w in self.wires:
             pa, pb = self.port_at(w.a), self.port_at(w.b)
             if pa and pb:
-                pts = route(pa, pb)
+                if w.control and not self._clear_between(pa, pb):
+                    # run in the gaps between columns: right of the start, left of the end
+                    ax = self.pos[w.a.split(".")[0]][0] + BW / 2 + COL_PITCH / 2 if pa[2] >= 0 else pa[0] - 12
+                    bx = pb[0] - 12 if pb[2] <= 0 else pb[0] + 12
+                    pts = route_bus(pa, pb, bus_y, ax, bx)
+                else:
+                    pts = route(pa, pb)
                 path = QPainterPath(QPointF(*pts[0]))
                 for pt in pts[1:]:
                     path.lineTo(QPointF(*pt))

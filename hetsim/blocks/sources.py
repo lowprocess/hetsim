@@ -184,7 +184,8 @@ class Source(Block):
     Waves arriving back at the source port (e.g. LO leaking out of the
     antenna) are absorbed and can be inspected with Result.incident().
     """
-    ports = ("out",)
+    ports = ("out", "sweep")
+    controls = ("sweep",)   # the swept tone's frequency, for an X/Y plot's x
     default_out = "out"
 
     def __init__(self, freq=None, power=None, name=None, tones=None, harmonics_dbc=None, phase=None):

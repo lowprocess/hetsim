@@ -31,6 +31,7 @@ CHOICES = {
     "family": ["butter", "cheby1", "cheby2", "ellip", "bessel"],
     "lo_waveform": ["sine", "square"],
     "spur_table": sorted(SPUR_PRESETS),
+    "detect": ["peak", "total"],
 }
 BOOLS = {"harmonics"}
 SKIP = {"file", "tones", "freq", "power", "name", "phase", "harmonics_dbc"}
@@ -130,9 +131,11 @@ ADD_DEFAULTS = {
     "attenuator": {"loss_db": 3},
     "splitter": {},
     "load": {},
+    "detector": {"detect": "peak"},
+    "xyplot": {},
 }
 _PREFIX = {"source": "src", "amplifier": "amp", "mixer": "mix", "filter": "flt", "ideal_filter": "flt",
-           "attenuator": "att", "splitter": "split", "load": "load"}
+           "attenuator": "att", "splitter": "split", "load": "load", "detector": "det", "xyplot": "xy"}
 _NAME = re.compile(r"[A-Za-z_][\w-]*$")
 _KEY = re.compile(r"""["']?([^"'\s:#\-\[{][^"':]*?)["']?[ \t]*:(?:[ \t]|$)""")
 
@@ -489,8 +492,10 @@ def _snap_tone(t: dict, res: float) -> dict:
     return {"freq": fs}
 
 
-def apply_edits(base: dict, edits: dict, resolution: float | None) -> tuple[dict, dict]:
-    """Copy of `base` with edits applied. Returns (netlist dict, snapped source frequencies)."""
+def apply_edits(base: dict, edits: dict, resolution: float | None,
+                tone_freqs: dict | None = None) -> tuple[dict, dict]:
+    """Copy of `base` with edits applied. Returns (netlist dict, snapped source frequencies).
+    `tone_freqs` ({tone name: Hz}) puts named tones at given frequencies (an animated sweep's frame)."""
     d = copy.deepcopy(base)
     snapped = {}
     for block, kv in (edits or {}).items():
@@ -499,6 +504,10 @@ def apply_edits(base: dict, edits: dict, resolution: float | None) -> tuple[dict
             raise KeyError(f"no block {block!r}")
         for path, value in kv.items():
             _set_param(spec, path, value)
+    for spec in d["blocks"].values():
+        for t in spec.get("tones", []) if tone_freqs else []:
+            if t.get("name") in tone_freqs:
+                t["freq"] = float(tone_freqs[t["name"]])
     for block, spec in d["blocks"].items():
         if spec.get("type") != "source":
             continue
@@ -570,7 +579,7 @@ class ViewerModel:
 
     def info(self) -> dict:
         c, _ = from_dict(self.base, self.base_dir)
-        ports = [f"{n}.{p}" for n, b in c.blocks.items() for p in b.ports]
+        ports = [f"{n}.{p}" for n, b in c.blocks.items() for p in b.ports if p not in b.controls]
         # default probe: the last block's default output in the main chain
         probe = None
         for n, b in reversed(list(c.blocks.items())):
@@ -578,7 +587,8 @@ class ViewerModel:
                 probe = f"{n}.{b.default_out}"
                 break
         schematic = {
-            "blocks": [{"name": n, "type": b.kind, "ports": list(b.ports)} for n, b in c.blocks.items()],
+            "blocks": [{"name": n, "type": b.kind, "ports": list(b.ports), "controls": list(b.controls)}
+                       for n, b in c.blocks.items()],
             "wires": [list(w) for w in c.wire_list()],
             "layout": self.base.get("layout") or {},
             "addable": list(ADD_DEFAULTS),
@@ -749,7 +759,9 @@ class ViewerModel:
         t0 = time.perf_counter()
         res = float(req.get("resolution") or self.default_resolution)
         solver = req.get("solver", "td")
-        d, snapped = apply_edits(self.base, req.get("params", {}), res if solver != "tone" else None)
+        d, snapped = apply_edits(self.base, req.get("params", {}), res if solver != "tone" else None,
+                                 req.get("tone_freqs"))
+        frame = bool(req.get("sweep_frame"))   # an animation frame: the sweep and X/Y plots are kept as they were
         has_pn = any(t.get("phase_noise") for b in d["blocks"].values() for t in b.get("tones") or [])
         if not req.get("phase_noise", True):   # the header's switch: drop it for this update
             for b in d["blocks"].values():
@@ -770,8 +782,12 @@ class ViewerModel:
             out["tone"] = [{"f": t.freq, "p": t.power_dbm, "label": t.label, "order": t.order, "fund": fund(t.vec)}
                            for t in tone_spec if t.power_dbm >= min_dbm]
             warn = tone_result.warning_text()
+            dets = {n: b for n, b in c.blocks.items() if b.kind == "detector"}
+            out["detectors"] = {n: _finite_or_none(b.read(tone_result.incident((n, "in")))) for n, b in dets.items()}
             swept = [t for b in c.blocks.values() for t in getattr(b, "sweep_specs", lambda: [])()]
-            if swept:
+            sweep_ports = [probe] + [f"{n}.in" for n in dets]   # detectors' inputs too, for the X/Y plots
+            sw = None
+            if swept and not frame:
                 par = analysis.POOL_SIZE if self.sweep_workers is None else max(1, self.sweep_workers)
                 if analysis._POOL_FAILED:
                     par = 1
@@ -811,7 +827,7 @@ class ViewerModel:
                             frac = frac[np.linspace(0, len(frac) - 1, cap).round().astype(int)]
                             note = f"output grid thinned to {cap} steps ({1000 * t_tone:.0f} ms per step)"
                     if len(frac):
-                        sw = band_sweep(c, st, workers=self.sweep_workers, ports=[probe], fractions=frac)
+                        sw = band_sweep(c, st, workers=self.sweep_workers, ports=sweep_ports, fractions=frac)
                         out["sweep"] = _sweep_json(sw, probe, incident, min_dbm, fund=fund)
                     else:
                         out["sweep"] = {"steps": [], "products": []}
@@ -819,10 +835,12 @@ class ViewerModel:
                                         "within the swept band" if anchor else "no swept product at this port")
                     out["sweep"]["anchor"] = anchor
                 else:
-                    sw = band_sweep(c, st, n, workers=self.sweep_workers, ports=[probe])
+                    sw = band_sweep(c, st, n, workers=self.sweep_workers, ports=sweep_ports)
                     out["sweep"] = _sweep_json(sw, probe, incident, min_dbm, fund=fund)
                 if note:
                     out["sweep"]["note"] = note
+            if not frame and any(b.kind == "xyplot" for b in c.blocks.values()):
+                out["xy"] = xy_plots(c, sw)
             if rbw and solver == "tone":   # phase noise for the RBW trace: the tone solver's skirts
                 bn = 10 * math.log10(1.0645 * rbw)   # Gaussian RBW noise bandwidth
                 sk = phase_noise_skirts(c, probe, st, incident, workers=self.sweep_workers, nominal=tone_result,
@@ -909,6 +927,41 @@ def fundamental_test(c):
             return False
         return sum(b not in los for b in blocks) == 1
     return test
+
+
+def _finite_or_none(x: float):
+    return x if math.isfinite(x) else None
+
+
+def xy_plots(c, sw) -> list[dict]:
+    """Each X/Y plot block's trace over the band sweep `sw`: x the swept tone's frequency (from the
+    source wired to `x`), y the reading of the detector wired to `y` at each step."""
+    out = []
+    for name, b in c.blocks.items():
+        if b.kind != "xyplot":
+            continue
+        rec = {"name": name, "x": [], "y": [], "x_label": "", "y_label": "", "note": None}
+        xw, yw = c.wires.get((name, "x")), c.wires.get((name, "y"))
+        src = c.blocks.get(xw[0]) if xw else None
+        det = c.blocks.get(yw[0]) if yw else None
+        if src is None or src.kind != "source" or xw[1] != "sweep":
+            rec["note"] = f"{name}: wire x to a source's sweep port"
+        elif det is None or det.kind != "detector" or yw[1] != "out":
+            rec["note"] = f"{name}: wire y to a detector's out port"
+        elif not src.sweep_specs():
+            rec["note"] = f"{name}: {xw[0]} has no tone in sweep mode (give one a band and mode: sweep)"
+        elif sw is None or not sw.steps:
+            rec["note"] = f"{name}: no band sweep to plot"
+        else:
+            t = src.sweep_specs()[0]
+            band = "" if det.fmin is None and det.fmax is None else \
+                f", {fmt_freq(det.fmin or 0)} – {fmt_freq(det.fmax) if det.fmax else '…'}"
+            rec.update(x=[s[t.name] for s in sw.steps],
+                       y=[_finite_or_none(det.read(r.incident((yw[0], "in")))) for r in sw.results],
+                       x_label=f"{t.name} frequency ({xw[0]})", y_label=f"{yw[0]} {det.detect} (dBm)",
+                       title=f"{name}: {yw[0]} {det.detect}{band} vs {t.name}")
+        out.append(rec)
+    return out
 
 
 def _default_anchor(c, moving, fund) -> str:
