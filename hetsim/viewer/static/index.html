@@ -340,7 +340,7 @@ function buildPanel() {
       lab.className = "lab";
       lab.textContent = p.label;
       lab.title = p.label;
-      if (["freq", "number", "int"].includes(p.kind)) {
+      if (["freq", "number", "int", "level"].includes(p.kind)) {
         lab.classList.add("limlab");
         lab.title = p.label + " · click to set the slider's limits";
         if (p.limits) {

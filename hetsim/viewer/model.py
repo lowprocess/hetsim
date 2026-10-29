@@ -285,7 +285,7 @@ def _apply_limits(params: list[dict], limits: dict) -> None:
     """Sliders with a netlist limit keep to it."""
     for p in params:
         rng = limits.get(p["path"])
-        if rng is None or p["kind"] not in ("freq", "number", "int"):
+        if rng is None or p["kind"] not in ("freq", "number", "int", "level"):
             continue
         lo, hi = _limit_values(p["path"], rng)
         p.update(min=lo, max=hi, limits=[lo, hi])

@@ -175,6 +175,24 @@ calibrated so the two solvers agree for small signals, within 0.05 dB in the tes
 million samples. Tones that share no coarse common grid need a coarser
 `resolution`, with sources moved onto it.
 
+## Desktop app
+
+```
+pip install 'hetsim[desktop]'                         # PySide6
+python -m hetsim app examples/vhf_single_conversion.yaml
+hetsim-app                                            # asks for a netlist
+```
+
+A native window (PySide6) with everything the browser viewer below has: parameter
+sliders, schematic editor, spectrum and waveform, band sweeps, RBW trace and phase
+noise, the netlist text editor. It needs no server and no browser: the window drives
+the same `ViewerModel` in-process and simulates on a worker thread, where the newest
+request wins, so dragging a slider stays smooth. Band sweeps use the worker processes
+as in the viewer; `--workers 1` keeps everything in one process. It follows the
+system's light or dark palette.
+
+From Python: `from hetsim.desktop import run; run(circuit=c)`.
+
 ## Live viewer
 
 ```

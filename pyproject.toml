@@ -14,10 +14,14 @@ dependencies = ["numpy", "scipy"]
 [project.optional-dependencies]
 plot = ["matplotlib"]
 yaml = ["pyyaml"]
+desktop = ["PySide6>=6.5", "pyyaml"]
 dev = ["pytest", "matplotlib", "pyyaml"]
 
 [project.scripts]
 hetsim = "hetsim.cli:main"
+
+[project.gui-scripts]
+hetsim-app = "hetsim.desktop.app:main"
 
 [tool.setuptools.packages.find]
 include = ["hetsim*"]

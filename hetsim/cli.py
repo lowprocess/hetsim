@@ -1,4 +1,4 @@
-"""Command line: python -m hetsim {run,responses,sweep,blocks} ..."""
+"""Command line: python -m hetsim {run,responses,blocks,view,app} ..."""
 from __future__ import annotations
 
 import argparse
@@ -67,6 +67,10 @@ def main(argv=None):
     v.add_argument("--no-browser", action="store_true", help="just print the URL")
     v.add_argument("--workers", type=int, help="processes for band sweeps (default: one per physical core; 1: none)")
 
+    d = sub.add_parser("app", help="open the native desktop viewer (needs PySide6)")
+    d.add_argument("netlist")
+    d.add_argument("--workers", type=int, help="processes for band sweeps (default: one per physical core; 1: none)")
+
     a = ap.parse_args(argv)
 
     if a.cmd == "blocks":
@@ -76,6 +80,14 @@ def main(argv=None):
             params = ", ".join(str(p) for n, p in sig.parameters.items() if n != "self")
             print(f"{k:13s} ports={cls.ports}\n              {params}")
         return 0
+
+    if a.cmd == "app":
+        try:
+            from .desktop import run
+            return run(a.netlist, workers=a.workers)
+        except ImportError as e:
+            print(f"the desktop viewer needs PySide6 (pip install 'hetsim[desktop]'): {e}", file=sys.stderr)
+            return 1
 
     if a.cmd == "view":
         from .viewer import serve
