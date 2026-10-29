@@ -43,8 +43,8 @@ def test_auto_layout_and_route():
     blocks = [{"name": "ant", "ports": ["out"]}, {"name": "mix", "ports": ["rf", "lo", "if"]},
               {"name": "lo", "ports": ["out"]}, {"name": "iff", "ports": ["in", "out"]}]
     pos = auto_layout(blocks, [["ant.out", "mix.rf"], ["lo.out", "mix.lo"], ["mix.if", "iff.in"]])
-    assert pos["ant"] == (0, 0) and pos["mix"] == (120, 0) and pos["iff"] == (240, 0)
-    assert pos["lo"] == (0, -100)                                 # LO above, one column before its mixer
+    assert pos["ant"] == (0, 0) and pos["mix"] == (150, 0) and pos["iff"] == (300, 0)
+    assert pos["lo"] == (0, -130)                                 # LO above, one column before its mixer
     pts = route((64, 24, 1, 0), (120, 24, -1, 0))
     assert pts[0] == (64, 24) and pts[-1] == (120, 24)
 
@@ -98,6 +98,7 @@ def test_window_simulates_and_draws(win):
 
 
 def test_slider_edit_resimulates(win):
+    win.panel.show_block("lna")
     row = win.panel.rows[("lna", "gain_db")]
     before = {t["label"]: t["p"] for t in win.vs.data["tone"]}["LO - RF"]
     row.edit.setText("25")
@@ -136,8 +137,8 @@ def test_dragging_a_block_and_wiring_with_the_mouse(win, app):
     for k in range(1, 6):
         send(QEvent.Type.MouseMove, start + QPointF(0, 16 * k), Qt.MouseButton.LeftButton)
     send(QEvent.Type.MouseButtonRelease, start + QPointF(0, 80), Qt.MouseButton.NoButton)
-    assert view.pos["lna"] == (240.0, 80.0)                     # auto-placed at (240, 0), dragged 80 down, on the grid
-    assert win.info["schematic"]["layout"]["lna"] == {"x": 240, "y": 80} and "lna: {x: 240, y: 80}" in win.model.text
+    assert view.pos["lna"] == (300.0, 80.0)                     # auto-placed at (300, 0), dragged 80 down, on the grid
+    assert win.info["schematic"]["layout"]["lna"] == {"x": 300, "y": 80} and "lna: {x: 300, y: 80}" in win.model.text
 
     win.sch_op({"op": "disconnect", "a": "lo.out"})
     a = view.blocks["lo"].ports["out"].scenePos()
@@ -188,11 +189,13 @@ def test_sweep_controls_rbw_and_phase_noise(win):
 
 
 def test_phase_noise_table_and_limits(win):
+    win.panel.show_block("lo")
     row = win.panel.rows[("lo", "tones.0.phase_noise")]
     row.en.setChecked(True)
     assert win.panel.collect()["lo"]["tones.0.phase_noise"][0] == [1e3, -80.0]
     win.panel.limitsRequested.emit("pre", "f1", [80e6, 95e6])
     assert "f1: [80MHz, 95MHz]" in win.model.text
+    win.panel.show_block("pre")
     assert win.panel.rows[("pre", "f1")].p["limits"] == [80e6, 95e6]
 
 
@@ -250,3 +253,35 @@ def test_open_errors_keep_the_window(bare, tmp_path, monkeypatch):
     assert shown and "nosuch" in shown[0] and bare.pages.currentWidget() is bare.start
     bare.open_path(str(VHF))
     assert bare.pages.currentIndex() == 1 and len(bare.sch.blocks) == 7
+
+
+def test_panel_shows_the_selected_block(win, app):
+    panel = win.panel
+    assert panel.current == "ant" and {b for b, _ in panel.rows} == {"ant"}           # one block at a time
+    assert set(panel.collect()) == {"ant", "pre", "lna", "lo", "mix", "iff", "ifamp"}   # values for all of them
+    win.sch.scene_.clearSelection()                                                    # a click on mix
+    win.sch.blocks["mix"].setSelected(True)
+    app.processEvents()
+    assert panel.current == "mix" and ("mix", "iip3_dbm") in panel.rows and panel.pick.currentData() == "mix"
+    panel._picked("iff")                                                               # pick from the menu
+    assert win.sch.blocks["iff"].isSelected() and not win.sch.blocks["mix"].isSelected()
+    win.sch_op({"op": "move", "layout": {}})                                           # edits keep it shown
+    win.sch_op({"op": "rename", "block": "iff", "to": "ifbpf"})
+    assert panel.current == "ifbpf" and win.sch.blocks["ifbpf"].isSelected()
+    win.sch_op({"op": "delete", "block": "ifbpf"})
+    assert panel.current == "ant"                                                      # gone: the first block
+
+
+def test_schematic_shows_critical_values(win):
+    from hetsim.desktop.schematic import details
+    g = win.info["groups"]
+    by = {b["name"]: b for b in win.info["schematic"]["blocks"]}
+    assert details(by["lna"], g) == ["15 dB", "OIP3 30 dBm · P1 18 dBm"]
+    assert details(by["mix"], g) == ["CL 6 dB · LO 7 dBm", "IIP3 15 dBm"]
+    assert details(by["pre"], g) == ["BP 88–108 MHz", "butter 3 · IL 1.5 dB"]
+    assert details(by["ant"], g) == ["RF 100 MHz · -80 dBm", "B1 100.4 MHz · -30 dBm", "+2 more tones"]
+    win.panel.show_block("lna")
+    row = win.panel.rows[("lna", "gain_db")]
+    row.edit.setText("21")
+    row._typed()
+    assert details(by["lna"], win.info["groups"])[0] == "21 dB"                        # follows the sliders

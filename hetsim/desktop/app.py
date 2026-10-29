@@ -205,7 +205,8 @@ class MainWindow(QMainWindow):
         sv.addWidget(self.sch, 1)
         self.sch.op.connect(self.sch_op)
         self.sch.probeClicked.connect(self.set_probe)
-        self.sch.blockClicked.connect(lambda n: None if self.ed_btn.isChecked() else self.panel.focus_block(n))
+        self.sch.blockClicked.connect(self.panel.show_block)
+        self.panel.blockChosen.connect(self.sch.select_block)
         self.sch.undoRequested.connect(self.do_undo)
         self.dele.clicked.connect(self.sch.delete_selected)
         self.undo_btn.clicked.connect(self.do_undo)
@@ -221,7 +222,7 @@ class MainWindow(QMainWindow):
         self.msgs.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         self.msgs.setContentsMargins(8, 2, 8, 2)
         right.addWidget(self.msgs)
-        right.setSizes([230, 420, 150, 40])
+        right.setSizes([290, 400, 130, 40])
         right.setStretchFactor(1, 1)
         split.addWidget(right)
         split.setSizes([360, 1040])
@@ -307,7 +308,8 @@ class MainWindow(QMainWindow):
             self.port.addItems(info["ports"])
             self.port.setCurrentText(self.probe)
         self.res.setText(fmt_f(self.vs.resolution))
-        self.panel.build(info["groups"])
+        shown = renames.get(self.panel.current, self.panel.current)
+        self.panel.build(info["groups"], shown)
         self.editor.load(info["text"], info["file"], info["can_save"])
         self._refresh_pull()
         with QSignalBlocker(self.add):
@@ -316,6 +318,7 @@ class MainWindow(QMainWindow):
             for t in info["schematic"]["addable"]:
                 self.add.addItem(t.replace("_", " "), t)
         self.sch.load(info["schematic"], info["groups"], self.probe, self.vs.incident, fit=first)
+        self.sch.select_block(self.panel.current)
         if first:
             QTimer.singleShot(0, self.sch, self.sch.fit)   # dropped if the view is gone by then
         self.undo_btn.setEnabled(bool(self.undo))
@@ -514,11 +517,9 @@ class MainWindow(QMainWindow):
             self.undo_btn.setEnabled(True)
             return
         self.load_model(info, keep=True, renames={op["block"]: op["to"]} if op["op"] == "rename" else {})
-        if info.get("added"):
-            item = self.sch.blocks.get(info["added"])
-            if item:
-                item.setSelected(True)
-            self.panel.focus_block(info["added"])
+        if info.get("added"):   # a new block: select it and show its parameters
+            self.panel.show_block(info["added"])
+            self.sch.select_block(info["added"])
 
     def _push_undo(self, before, after):
         if before != after:

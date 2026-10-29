@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QPointF, QRectF, Qt, Signal
+from PySide6.QtCore import QPointF, QRectF, QSignalBlocker, Qt, Signal
 from PySide6.QtGui import QBrush, QFont, QKeySequence, QPainter, QPainterPath, QPainterPathStroker, QPen
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsPathItem, QGraphicsScene,
                                QGraphicsView, QInputDialog)
@@ -20,6 +20,8 @@ from .plot import fmt_f
 from .tracks import BH, BW, auto_layout, port_layout, route
 
 GRID = 20
+LABEL_W = 146   # width of the name and detail lines under a block (the layout's column pitch is 150)
+FIT_MIN = 0.85  # Fit doesn't zoom out further: the details stay readable
 
 
 def _snap(v: float) -> float:
@@ -90,8 +92,8 @@ def _param_of(groups, name, path):
     return p["value"] if p and (not p["optional"] or p["enabled"]) and visible(g, p) else None
 
 
-def summary(b: dict, groups: list) -> str:
-    """Key values under a block's name; follows the sliders."""
+def details(b: dict, groups: list) -> list[str]:
+    """A block's critical values, a few short lines for under its name; they follow the sliders."""
     v = lambda path: _param_of(groups, b["name"], path)  # noqa: E731
     n = lambda x: f"{float(x):.1f}".rstrip("0").rstrip(".")  # noqa: E731
     f = lambda x: fmt_f(x, 4)  # noqa: E731
@@ -101,37 +103,55 @@ def summary(b: dict, groups: list) -> str:
             if abs(hi) >= s:
                 return f"{lo / s:.4g}–{hi / s:.4g} {u}" if abs(lo) >= s else f"{f(lo)} – {f(hi)}"
         return f"{f(lo)} – {f(hi)}"
+
+    def opt(path, label, unit="dBm"):
+        x = v(path)
+        return None if x is None else f"{label} {n(x)} {unit}".strip()
+
+    def join(*parts):
+        return " · ".join(p for p in parts if p)
     t = b["type"]
     if t == "amplifier":
-        return "" if v("gain_db") is None else f"{n(v('gain_db'))} dB"
+        return [x for x in (opt("gain_db", "", "dB"),
+                            join(opt("oip3_dbm", "OIP3") or opt("iip3_dbm", "IIP3"), opt("op1db_dbm", "P1")),
+                            join(opt("oip2_dbm", "OIP2") or opt("iip2_dbm", "IIP2"))) if x]
     if t == "attenuator":
-        return "" if v("loss_db") is None else f"{n(v('loss_db'))} dB"
+        return [opt("loss_db", "", "dB")] if v("loss_db") is not None else []
     if t == "mixer":
-        return "" if v("conversion_loss_db") is None else f"CL {n(v('conversion_loss_db'))} dB"
+        return [x for x in (join(opt("conversion_loss_db", "CL", "dB"), opt("lo_drive_dbm", "LO")),
+                            join(opt("iip3_dbm", "IIP3"), opt("iip2_dbm", "IIP2")),
+                            opt("max_order", "order ≤", "")) if x]
     if t == "ideal_filter":
-        return rng(v("fmin"), v("fmax")) if v("fmin") is not None and v("fmax") is not None else ""
+        return [x for x in (rng(v("fmin"), v("fmax")) if v("fmin") is not None and v("fmax") is not None else None,
+                            opt("insertion_loss_db", "IL", "dB")) if x]
     if t == "filter":
         r = v("response")
         if r in ("lowpass", "highpass"):
-            return ("LP " if r == "lowpass" else "HP ") + (f(v("fc")) if v("fc") else "")
-        tag = "BS " if r == "bandstop" else "BP "
-        if v("f1") is not None and v("f2") is not None:
-            return tag + rng(v("f1"), v("f2"))
-        return tag + (f"{f(v('f0'))} / {f(v('bw'))}" if v("f0") else "")
+            band = ("LP " if r == "lowpass" else "HP ") + (f(v("fc")) if v("fc") else "")
+        else:
+            tag = "BS " if r == "bandstop" else "BP "
+            band = tag + (rng(v("f1"), v("f2")) if v("f1") is not None and v("f2") is not None
+                          else f"{f(v('f0'))} / {f(v('bw'))}" if v("f0") else "")
+        order = join(f"{v('family')} {v('order')}" if v("family") else None, opt("insertion_loss_db", "IL", "dB"))
+        return [x for x in (band, order) if x]
+    if t == "splitter":
+        return [join(opt("excess_loss_db", "+", "dB"), opt("isolation_db", "iso", "dB"))]
     if t == "source":
         g = next((x for x in groups if x["block"] == b["name"]), None)
         tones = [p for p in (g["params"] if g else []) if p["path"].endswith(".freq") and p["path"].count(".") == 2]
-        if not tones:
-            return ""
-        tag = tones[0]["label"].removesuffix(" freq")
-        if len(tones) == 1 and v("tones.0.mute"):
-            return f"{tag} muted"
-        mode = v("tones.0.mode")
-        first = (f"{tag} {rng(v('tones.0.band.0'), v('tones.0.band.1'))} {mode}"
-                 + (" log" if v("tones.0.spacing") == "log" else "")
-                 if mode and mode != "cw" else f"{tag} {f(tones[0]['value'])}")
-        return f"{first} +{len(tones) - 1}" if len(tones) > 1 else first
-    return ""
+        lines = []
+        for p in tones:
+            i = p["path"].split(".")[1]
+            tag = p["label"].removesuffix(" freq")
+            mode, pw = v(f"tones.{i}.mode"), v(f"tones.{i}.power")
+            where = (f"{rng(v(f'tones.{i}.band.0'), v(f'tones.{i}.band.1'))} {mode}"
+                     + (" log" if v(f"tones.{i}.spacing") == "log" else "")
+                     if mode and mode != "cw" else f(p["value"]))
+            lines.append(f"{tag} muted" if v(f"tones.{i}.mute") else join(f"{tag} {where}", f"{n(pw)} dBm" if pw is not None else None))
+        if len(lines) > 3:
+            lines = lines[:2] + [f"+{len(lines) - 2} more tones"]
+        return lines
+    return []
 
 
 class PortItem(QGraphicsEllipseItem):
@@ -193,7 +213,7 @@ class BlockItem(QGraphicsItem):
         self.font_s.setPixelSize(11)
 
     def boundingRect(self):
-        return QRectF(-60, -14, BW + 120, BH + 50)
+        return QRectF(-LABEL_W / 2 + BW / 2, -14, LABEL_W, BH + 18 + 13 * 3 + 20)
 
     def shape(self):
         p = QPainterPath()
@@ -228,10 +248,14 @@ class BlockItem(QGraphicsItem):
             qp.drawText(QRectF(0, 0, BW, BH), Qt.AlignmentFlag.AlignCenter, text)
         qp.setFont(self.font_b)
         qp.setPen(theme.c("text-primary"))
-        qp.drawText(QRectF(-60, BH + 2, BW + 120, 16), Qt.AlignmentFlag.AlignHCenter, self.name)
+        x0 = BW / 2 - LABEL_W / 2
+        qp.drawText(QRectF(x0, BH + 2, LABEL_W, 16), Qt.AlignmentFlag.AlignHCenter, self.name)
         qp.setFont(self.font_s)
         qp.setPen(theme.c("text-muted"))
-        qp.drawText(QRectF(-60, BH + 16, BW + 120, 16), Qt.AlignmentFlag.AlignHCenter, summary(self.b, self.view.groups))
+        fm = qp.fontMetrics()
+        for k, line in enumerate(details(self.b, self.view.groups)[:3]):
+            text = fm.elidedText(line, Qt.TextElideMode.ElideRight, LABEL_W - 6)
+            qp.drawText(QRectF(x0, BH + 16 + 13 * k, LABEL_W, 15), Qt.AlignmentFlag.AlignHCenter, text)
         if len(self.b["ports"]) > 2:   # name the ports of mixers and splitters
             qp.setFont(self.font_s)
             for p, (x, y, dx, dy) in self.layout.items():
@@ -325,6 +349,25 @@ class SchematicView(QGraphicsView):
         self.incident = False
         self.temp = None
         self.wire_from = None
+        self.scene_.selectionChanged.connect(self._selection)
+
+    def _selection(self):
+        """A block selected (click, or rubber band around one) is the one whose parameters show."""
+        try:
+            sel = [it for it in self.scene_.selectedItems() if isinstance(it, BlockItem)]
+        except RuntimeError:   # the scene is being torn down
+            return
+        if len(sel) == 1:
+            self.blockClicked.emit(sel[0].name)
+
+    def select_block(self, name: str | None):
+        """Make `name` the only selected item."""
+        it = self.blocks.get(name)
+        if it is None or self.scene_.selectedItems() == [it]:
+            return
+        self.scene_.clearSelection()
+        it.setSelected(True)
+        self.ensureVisible(it, 40, 40)
 
     # ------------------------------------------------------------ building
     def load(self, sc: dict, groups: list, probe: str, incident: bool, fit: bool = False):
@@ -340,6 +383,7 @@ class SchematicView(QGraphicsView):
 
     def rebuild(self):
         sel = {it.name for it in self.blocks.values() if it.isSelected()}
+        blocker = QSignalBlocker(self.scene_)   # rebuilding is not the user changing the selection
         self.scene_.clear()
         self.blocks, self.wires = {}, []
         self.wired = {r for w in self.sc.get("wires", []) for r in w}
@@ -353,6 +397,7 @@ class SchematicView(QGraphicsView):
             w = WireItem(a, b)
             self.scene_.addItem(w)
             self.wires.append(w)
+        blocker.unblock()
         self.reroute()
 
     def refresh(self, groups=None, probe=None, incident=None):
@@ -387,13 +432,16 @@ class SchematicView(QGraphicsView):
                 w.setPath(path)
 
     def fit(self):
+        """Fit the circuit to the panel, but not so small that the block details can't be read
+        (pan or wheel-zoom out for the rest)."""
         r = self.scene_.itemsBoundingRect()
         if r.isEmpty():
             return
         self.fitInView(r.adjusted(-20, -20, 20, 20), Qt.AspectRatioMode.KeepAspectRatio)
-        if self.transform().m11() > 1.4:
+        k = min(max(self.transform().m11(), FIT_MIN), 1.4)
+        if k != self.transform().m11():
             self.resetTransform()
-            self.scale(1.4, 1.4)
+            self.scale(k, k)
             self.centerOn(r.center())
 
     def layout_now(self) -> dict:

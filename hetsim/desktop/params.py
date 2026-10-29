@@ -1,4 +1,4 @@
-"""The parameter panel: one collapsible section per block, a control per adjustable parameter.
+"""The parameter panel: the selected block's parameters, a control for each.
 
 Built from ViewerModel.describe() groups, the same records the browser viewer uses: freq,
 number and int sliders, choices, booleans, phase-noise tables; optional parameters with an
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 
-from PySide6.QtCore import QTimer, Qt, Signal
+from PySide6.QtCore import QSignalBlocker, QTimer, Qt, Signal
 from PySide6.QtWidgets import (QCheckBox, QComboBox, QFrame, QGraphicsOpacityEffect, QGridLayout, QHBoxLayout,
                                QLabel, QLineEdit, QPushButton, QScrollArea, QSlider, QToolButton, QVBoxLayout,
                                QWidget)
@@ -356,76 +356,85 @@ def _float(text: str) -> float:
         return math.nan
 
 
-class Section(QWidget):
-    """A block's parameters under a header that folds them away."""
-
-    def __init__(self, group: dict):
-        super().__init__()
-        self.g = group
-        v = QVBoxLayout(self)
-        v.setContentsMargins(0, 0, 0, 4)
-        v.setSpacing(0)
-        self.head = QToolButton()
-        self.head.setText(f"  {group['block']}   {group['type']}")
-        self.head.setCheckable(True)
-        self.head.setChecked(True)
-        self.head.setArrowType(Qt.ArrowType.DownArrow)
-        self.head.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
-        self.head.setAutoRaise(True)
-        self.head.setStyleSheet("QToolButton { font-weight: 600; padding: 4px; text-align: left; }")
-        self.head.toggled.connect(self.fold)
-        self.body = QWidget()
-        self.body_lay = QVBoxLayout(self.body)
-        self.body_lay.setContentsMargins(0, 0, 0, 0)
-        self.body_lay.setSpacing(0)
-        v.addWidget(self.head)
-        v.addWidget(self.body)
-        line = QFrame()
-        line.setFrameShape(QFrame.Shape.HLine)
-        line.setFrameShadow(QFrame.Shadow.Plain)
-        line.setStyleSheet("color: rgba(128,128,128,60)")
-        v.addWidget(line)
-
-    def fold(self, open_):
-        self.body.setVisible(open_)
-        self.head.setArrowType(Qt.ArrowType.DownArrow if open_ else Qt.ArrowType.RightArrow)
-
-
-class ParamPanel(QScrollArea):
+class ParamPanel(QWidget):
+    """The parameters of one block at a time: the block picked here or on the schematic."""
     changed = Signal()                          # a value changed: simulate
     touched = Signal()                          # the user edited a value
     limitsRequested = Signal(str, str, object)  # block, path, [min, max] or None
+    blockChosen = Signal(str)                   # picked from the menu here
     message = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWidgetResizable(True)
         self.setMinimumWidth(320)
+        v = QVBoxLayout(self)
+        v.setContentsMargins(0, 0, 0, 0)
+        v.setSpacing(0)
+        head = QHBoxLayout()
+        head.setContentsMargins(10, 8, 10, 6)
+        self.pick = QComboBox()
+        self.pick.setToolTip("The block whose parameters are shown (or click a block on the schematic)")
+        self.pick.activated.connect(lambda i: self._picked(self.pick.itemData(i)))
+        self.kind = QLabel()
+        self.kind.setStyleSheet("color: gray")
+        head.addWidget(self.pick, 1)
+        head.addWidget(self.kind)
+        v.addLayout(head)
+        line = QFrame()
+        line.setFrameShape(QFrame.Shape.HLine)
+        line.setStyleSheet("color: rgba(128,128,128,60)")
+        v.addWidget(line)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        v.addWidget(self.scroll, 1)
         self.groups: list[dict] = []
         self.rows: dict[tuple, Row] = {}
-        self.sections: dict[str, Section] = {}
+        self.current: str | None = None
 
-    def build(self, groups: list[dict]):
+    def build(self, groups: list[dict], current: str | None = None):
+        """New parameter records (a model loaded or edited); keeps showing `current` if it still exists."""
         self.groups = groups
-        self.rows, self.sections = {}, {}
+        names = [g["block"] for g in groups]
+        with QSignalBlocker(self.pick):
+            self.pick.clear()
+            for g in groups:
+                self.pick.addItem(f"{g['block']}", g["block"])
+        self.current = None
+        self.show_block(current if current in names else names[0] if names else None)
+
+    def show_block(self, name: str | None):
+        if name == self.current and self.rows:
+            return
+        g = next((x for x in self.groups if x["block"] == name), None)
+        self.current = name if g else None
+        self.rows = {}
         inner = QWidget()
         lay = QVBoxLayout(inner)
-        lay.setContentsMargins(0, 4, 0, 16)
+        lay.setContentsMargins(0, 6, 0, 16)
         lay.setSpacing(0)
-        for g in groups:
-            sec = Section(g)
-            self.sections[g["block"]] = sec
+        if g is not None:
             for p in g["params"]:
                 row = Row(self, g, p)
                 self.rows[(g["block"], p["path"])] = row
-                sec.body_lay.addWidget(row)
-            lay.addWidget(sec)
+                lay.addWidget(row)
+            if not g["params"]:
+                lay.addWidget(QLabel("  no adjustable parameters"))
         lay.addStretch(1)
-        self.setWidget(inner)
-        for g in groups:
+        self.scroll.setWidget(inner)   # deletes the previous block's rows
+        with QSignalBlocker(self.pick):
+            self.pick.setCurrentIndex(max(0, self.pick.findData(self.current)))
+        self.kind.setText(g["type"] if g else "")
+        if g is not None:
             self.refresh_group(g)
 
+    def _picked(self, name):
+        self.show_block(name)
+        self.blockChosen.emit(name)
+
     def refresh_group(self, g):
+        if g["block"] != self.current:
+            return
         for p in g["params"]:
             self.rows[(g["block"], p["path"])].refresh()
 
@@ -435,6 +444,7 @@ class ParamPanel(QScrollArea):
         self.changed.emit()
 
     def collect(self) -> dict:
+        """Every block's values (not only the one shown)."""
         out = {}
         for g in self.groups:
             out[g["block"]] = {p["path"]: (p["value"] if (not p["optional"] or p["enabled"]) and visible(g, p) else None)
@@ -443,21 +453,19 @@ class ParamPanel(QScrollArea):
 
     def apply_snapped(self, snapped: dict):
         for block, kv in (snapped or {}).items():
+            g = next((x for x in self.groups if x["block"] == block), None)
             for path, f in kv.items():
+                p = g and next((q for q in g["params"] if q["path"] == path), None)
+                if p is None or abs(p["value"] - f) <= 1e-6:
+                    continue
                 row = self.rows.get((block, path))
-                if row is not None and abs(row.p["value"] - f) > 1e-6:
+                if row is not None:
                     row.set_value(f)
+                else:
+                    p["value"] = f
 
     def focus_block(self, name: str):
-        sec = self.sections.get(name)
-        if sec is None:
-            return
-        sec.head.setChecked(True)
-        QTimer.singleShot(0, sec, lambda: self.ensureWidgetVisible(sec, 0, 0))   # after the layout settles
-        sec.head.setStyleSheet("QToolButton { font-weight: 600; padding: 4px; text-align: left; "
-                               "background: rgba(42,120,214,40); }")
-        QTimer.singleShot(900, sec.head, lambda: sec.head.setStyleSheet(
-            "QToolButton { font-weight: 600; padding: 4px; text-align: left; }"))
+        self.show_block(name)
 
 
 def carry_values(prev: list[dict], groups: list[dict], renames: dict) -> None:

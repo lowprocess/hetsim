@@ -199,6 +199,12 @@ request wins, so dragging a slider stays smooth. Band sweeps use the worker proc
 as in the viewer; `--workers 1` keeps everything in one process. It follows the
 system's light or dark palette.
 
+The parameter panel shows one block at a time: the block selected on the schematic, or
+chosen from the menu at the top of the panel. On the schematic, each block shows its
+critical values under its name (an amplifier's gain, OIP3 and P1dB, a mixer's conversion
+loss, LO drive and IIP3, a filter's band, family and order, a source's tones). They follow
+the sliders.
+
 From Python: `from hetsim.desktop import run; run(circuit=c)`.
 
 ## Live viewer

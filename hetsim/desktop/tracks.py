@@ -125,6 +125,7 @@ def rbw_trace(x0: float, x1: float, n: int, lines: list[tuple[float, float]], rb
 
 # ---------------------------------------------------------------- schematic layout
 BW, BH = 64, 48   # block body size in schematic units
+COL_PITCH, ROW_PITCH = 150.0, 130.0   # auto-layout grid: room for a block's name and three detail lines
 
 
 def port_layout(ports: list[str]) -> dict[str, tuple[float, float, int, int]]:
@@ -152,7 +153,8 @@ def port_layout(ports: list[str]) -> dict[str, tuple[float, float, int, int]]:
 
 def auto_layout(blocks: list[dict], wires: list) -> dict[str, tuple[float, float]]:
     """Columns follow the signal (longest path from the sources); a branch that drives a mixer's
-    LO port sits one row above that mixer, ending one column before it."""
+    LO port sits one row above that mixer, ending one column before it. Returns positions on a
+    COL_PITCH x ROW_PITCH grid."""
     names = [b["name"] for b in blocks]
     side, succ, pred, edges, feeds = {}, {n: [] for n in names}, {n: [] for n in names}, [], {}
     for b in blocks:
@@ -216,7 +218,7 @@ def auto_layout(blocks: list[dict], wires: list) -> dict[str, tuple[float, float
         else:
             s = next((q for q in succ[n] if q in row), None)
             place(n, row[s] if s is not None else -1)
-    return {n: (col[n] * 120.0, row[n] * 100.0) for n in names}
+    return {n: (col[n] * COL_PITCH, row[n] * ROW_PITCH) for n in names}
 
 
 def route(a: tuple, b: tuple) -> list[tuple[float, float]]:
