@@ -83,6 +83,11 @@ class Mixer(Block):
             raise ValueError(f"max_order must be a whole number >= 2, not {max_order!r}")
         self.max_order = int(max_order) if max_order is not None else None
 
+    def _side_db(self, c: int) -> float:
+        """Gain of a product whose positive-frequency form carries c times the LO. All of it here;
+        an I/Q mixer's two branches add or cancel according to c."""
+        return 0.0
+
     def spur_entries(self) -> dict:
         """The spur table entries {(m, n): dBc} this mixer generates, after max_order."""
         return {mn: v for mn, v in self.table.entries.items()
@@ -109,18 +114,20 @@ class Mixer(Block):
                 if lvl is None or lvl < floor:
                     continue
                 if m == 0:  # RF harmonic straight through to the output
-                    out.add(vec_comb(t.vec, n, (), 0), n * t.freq, lvl)
+                    out.add(vec_comb(t.vec, n, (), 0), n * t.freq, lvl + self._side_db(0))
                     continue
-                out.add(vec_comb(vlo, m, t.vec, n), m * flo + n * t.freq, lvl)
-                out.add(vec_comb(vlo, m, t.vec, -n), m * flo - n * t.freq, lvl, scale=m * flo)
+                out.add(vec_comb(vlo, m, t.vec, n), m * flo + n * t.freq, lvl + self._side_db(m))
+                diff = m * flo - n * t.freq
+                out.add(vec_comb(vlo, m, t.vec, -n), diff, lvl + self._side_db(m if diff > 0 else -m), scale=m * flo)
         if self.iip3 is not None:
             for t in nonlinear_products(inp, ctx, ip3=self.iip3, harmonics=False):
                 lvl = t.power_dbm - self.cl
                 if lvl >= floor:
-                    out.add(vec_comb(vlo, 1, t.vec, 1), flo + t.freq, lvl)
-                    out.add(vec_comb(vlo, 1, t.vec, -1), flo - t.freq, lvl, scale=flo)
+                    out.add(vec_comb(vlo, 1, t.vec, 1), flo + t.freq, lvl + self._side_db(1))
+                    diff = flo - t.freq
+                    out.add(vec_comb(vlo, 1, t.vec, -1), diff, lvl + self._side_db(1 if diff > 0 else -1), scale=flo)
         if self.iip2 is not None:
-            out.add_spectrum(nonlinear_products(inp, ctx, ip2=self.iip2, harmonics=False), -self.cl)
+            out.add_spectrum(nonlinear_products(inp, ctx, ip2=self.iip2, harmonics=False), -self.cl + self._side_db(0))
 
     def respond(self, incident, ctx):
         rf, lo_in, if_in = incident["rf"], incident["lo"], incident["if"]
@@ -153,6 +160,9 @@ class Mixer(Block):
         return {"rf": out_rf, "lo": out_lo, "if": out_if}
 
     # -- small signal -------------------------------------------------------
+    def linearity(self):
+        return self.iip3, None
+
     def operating_point(self, incident):
         """The LO frequency, or None without one."""
         los = incident["lo"].strongest(1)
@@ -171,11 +181,62 @@ class Mixer(Block):
             if n != 1 or m == 0:
                 continue
             g = 10 ** (-(self.cl + dbc) / 10)
-            # the output at f comes from inputs at m*fLO + f and |m*fLO - f|
-            out += [(q, fi, g) for fi in (m * flo + f, abs(m * flo - f)) if fi > 0]
+            # the output at f comes from an input at m*fLO + f (then f = fi - m*fLO, carrying -m LOs)
+            # and from |m*fLO - f| (then f = m*fLO +/- fi, carrying +m)
+            for fi, c in ((m * flo + f, -m), (abs(m * flo - f), m)):
+                side = g * 10 ** (self._side_db(c) / 10)
+                if fi > 0 and side > 0:
+                    out.append((q, fi, side))
         return out
 
     def noise_target(self, port, f, flo):
         if port != "lo" and self.nf is not None and flo is not None:
             return 10 ** ((self.nf - self.cl) / 10)
         return super().noise_target(port, f, flo)
+
+
+@register("iq_mixer")
+class IQMixer(Mixer):
+    """A quadrature mixer pair and the 90 degree combination of its branches, as one block.
+
+    An image-reject (Hartley) mixer, or the analogue half of a low-IF or complex zero-IF receiver, where
+    the combination happens digitally. It takes everything a mixer does, and the same conversion loss:
+
+        sideband             'upper' keeps RF above the LO (RF - LO), 'lower' keeps RF below it (LO - RF)
+        gain_imbalance_db    Q branch against I
+        phase_imbalance_deg  error of the 90 degrees
+
+    The other sideband comes through down by the classic image rejection,
+        IRR = (1 + 2 g cos(phi) + g^2) / (1 - 2 g cos(phi) + g^2),
+    which is infinite until an imbalance is given. Each product's Q branch sits c*90 degrees from its I
+    branch, for c LOs in it, and the combination adds another 90: so 3 x 1 spurs favour the opposite
+    sideband, and what doesn't pass through the LO, such as IM2, adds in quadrature, 3 dB down.
+    Isolation paths are taken as given. A product landing exactly on DC is dropped, as everywhere.
+    """
+
+    def __init__(self, conversion_loss_db=0.0, sideband="upper", gain_imbalance_db=0.0, phase_imbalance_deg=0.0,
+                 lo_rf_isolation_db=None, lo_if_isolation_db=None, rf_if_isolation_db=None, rf_lo_isolation_db=None,
+                 iip3_dbm=None, iip2_dbm=None, spur_table=None, lo_drive_dbm=None, lo_drive_tolerance_db=3.0,
+                 lo_waveform="sine", max_order=None, nf_db=None, vswr=None):
+        super().__init__(conversion_loss_db, lo_rf_isolation_db, lo_if_isolation_db, rf_if_isolation_db,
+                         rf_lo_isolation_db, iip3_dbm, iip2_dbm, spur_table, lo_drive_dbm, lo_drive_tolerance_db,
+                         lo_waveform, max_order, nf_db, vswr)
+        if sideband not in ("upper", "lower"):
+            raise ValueError("sideband must be 'upper' or 'lower'")
+        self.sideband = sideband
+        self.gain_imb = parse_db(gain_imbalance_db)
+        self.phase_imb = parse_db(phase_imbalance_deg)
+        self.params.update(sideband=sideband, gain_imbalance_db=gain_imbalance_db,
+                           phase_imbalance_deg=phase_imbalance_deg)
+
+    def _side_db(self, c: int) -> float:
+        hilbert = -90.0 if self.sideband == "upper" else 90.0
+        theta = math.radians(-c * 90.0 + hilbert + self.phase_imb)
+        g = 10 ** (self.gain_imb / 20)
+        p = abs(1 + g * complex(math.cos(theta), math.sin(theta))) ** 2 / 4
+        return 10 * math.log10(p) if p > 1e-30 else -math.inf
+
+    def image_rejection_db(self) -> float:
+        """Wanted sideband over the other, from the imbalances alone."""
+        c = -1 if self.sideband == "upper" else 1
+        return self._side_db(c) - self._side_db(-c)

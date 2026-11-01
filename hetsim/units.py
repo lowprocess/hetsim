@@ -13,6 +13,9 @@ _SCALE = {"": 1.0, "k": 1e3, "K": 1e3, "M": 1e6, "G": 1e9, "T": 1e12}
 _DB_RE = re.compile(r"^\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)\s*(?:dBm|dBc|dB)?\s*$", re.IGNORECASE)
 
 
+KT0_DBM_HZ = 10 * math.log10(1.380649e-23 * 290.0 * 1e3)   # thermal noise at T0 = 290 K: -173.98 dBm/Hz
+
+
 def parse_freq(x) -> float:
     """Parse a frequency: number (Hz) or string like '10.7MHz', '455k', '2.4 GHz'."""
     if x is None:

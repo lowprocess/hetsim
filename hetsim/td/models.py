@@ -24,12 +24,13 @@ or give the block a respond_td(incident, ctx) method.
 """
 from __future__ import annotations
 
+import dataclasses
 import math
 import zlib
 
 import numpy as np
 
-from ..blocks import Amplifier, Load, Mixer, Source, Splitter, TwoPort
+from ..blocks import ADC, Amplifier, IQMixer, Load, Mixer, Source, Splitter, TwoPort
 
 TD_MODELS: dict[type, callable] = {}
 
@@ -299,3 +300,92 @@ def _mixer(b: Mixer, inc, ctx):
         conv[key] = (x, y)
         out += y
     return {"rf": out_rf, "lo": out_lo, "if": out_if}
+
+
+# ---------------------------------------------------------------- I/Q mixer: two real branches
+@td_model(IQMixer)
+def _iq_mixer(b: IQMixer, inc, ctx):
+    """I and Q are ordinary mixers on LOs 90 degrees apart; the output is (I + g*H[Q]) / 2, with H the
+    +/-90 degree shift and its error, which keeps one sideband at the mixer's conversion loss."""
+    rf, lo, iff = inc["rf"], inc["lo"], inc["if"]
+    out_rf, out_lo, out_if = ctx.zeros(), ctx.zeros(), ctx.zeros()
+    if b.lo_if is not None:
+        out_if += lo * _db(b.lo_if)
+        out_lo += iff * _db(b.lo_if)
+    if b.lo_rf is not None:
+        out_rf += lo * _db(b.lo_rf)
+    if b.rf_lo is not None:
+        out_lo += rf * _db(b.rf_lo)
+    if b.rf_if is not None:
+        out_if += rf * _db(b.rf_if)
+        out_rf += iff * _db(b.rf_if)
+    if not lo.any():
+        if rf.any() or iff.any():
+            ctx.warn("no LO drive at the LO port; only leakage is produced")
+        return {"rf": out_rf, "lo": out_lo, "if": out_if}
+
+    core = ctx.cache.get("core")
+    if core is None:   # the conversion terms alone: isolation is added once, above
+        core = ctx.cache["core"] = Mixer(b.cl, None, None, None, None, b.iip3, b.iip2, b.table, b.lo_drive, b.lo_tol,
+                                         b.lo_waveform, b.max_order)
+    key = ("hq", ctx.n, ctx.fs)
+    h = ctx.cache.get(key)
+    if h is None:
+        lo90 = np.full(len(ctx.f), -1j, dtype=complex)                  # cos -> sin: the Q branch's LO
+        side = -90.0 if b.sideband == "upper" else 90.0
+        hq = np.full(len(ctx.f), np.exp(1j * math.radians(side + b.phase_imb)), dtype=complex)
+        h = ctx.cache[key] = (lo90, hq * 10 ** (b.gain_imb / 20))
+    lo_q = ctx.filt(lo, h[0])
+    i_ctx = dataclasses.replace(ctx, cache=ctx.cache.setdefault("i", {}))
+    q_ctx = dataclasses.replace(ctx, cache=ctx.cache.setdefault("q", {}))
+    from_i = _mixer(core, {"rf": rf, "lo": lo, "if": iff}, i_ctx)
+    from_q = _mixer(core, {"rf": rf, "lo": lo_q, "if": iff}, q_ctx)
+    out_if += (from_i["if"] + ctx.filt(from_q["if"], h[1])) / 2
+    out_rf += (from_i["rf"] + ctx.filt(from_q["rf"], h[1])) / 2
+    return {"rf": out_rf, "lo": out_lo, "if": out_if}
+
+
+# ---------------------------------------------------------------- ADC: real samples
+@td_model(ADC)
+def _adc(b: ADC, inc, ctx):
+    x = inc["in"]
+    if not x.any():
+        return {"out": ctx.zeros()}
+    hit = ctx.cache.get("adc")
+    if hit is not None and hit[0] is x:
+        return {"out": hit[1]}
+    from scipy import fft as sfft
+    ratio = b.fs / ctx.df
+    m = int(round(ratio))
+    if abs(ratio - m) > 1e-6:
+        ctx.warn(f"sample rate {b.fs:g} Hz is not on the {ctx.df:g} Hz grid; using {m * ctx.df:g} Hz")
+    # sampling folds the spectrum: the samples' M-point DFT is the record's N-point DFT, wrapped
+    folded = np.zeros(m, complex)
+    np.add.at(folded, np.round(sfft.fftfreq(ctx.n, 1 / ctx.n)).astype(int) % m, sfft.fft(x))   # by signed frequency
+    s = sfft.ifft(folded * (m / ctx.n)).real
+    a_fs = ctx.amp(b.fsdbm)
+    if np.max(np.abs(s)) > a_fs:
+        ctx.warn(f"samples clip at full scale ({b.fsdbm:.1f} dBm)")
+    # polynomial from the harmonics of a full-scale sine: amplitudes k2*A/2 and k3*A/4
+    if b.hd2 is not None:
+        s = s + 2 * 10 ** (b.hd2 / 20) * s * s / a_fs
+    if b.hd3 is not None:
+        s = s + 4 * 10 ** (b.hd3 / 20) * s * s * s / a_fs ** 2
+    lsb = 2 * a_fs / 2 ** b.bits
+    extra = (a_fs ** 2 / 2) * 10 ** (-b.snr / 10) - lsb ** 2 / 12       # noise beyond quantisation, to reach snr_db
+    if extra > 0:
+        rng = np.random.default_rng([ctx.seed, zlib.crc32((b.name or "adc").encode())])
+        s = s + rng.normal(0.0, math.sqrt(extra), m)
+    s = np.clip(s, -a_fs, a_fs - lsb)
+    s = np.round(s / lsb) * lsb
+    # back on the solver's grid as the first Nyquist zone, the samples' own content
+    y = np.zeros(ctx.n // 2 + 1, complex)
+    spec = sfft.rfft(s) * (ctx.n / m)
+    keep = min(len(y), len(spec))
+    y[:keep] = spec[:keep]
+    if m % 2 == 0 and keep == len(spec) and ctx.n > m:
+        y[keep - 1] /= 2                                                # the Nyquist bin splits when re-expanded
+    y[0] = 0
+    out = sfft.irfft(y, ctx.n)
+    ctx.cache["adc"] = (x, out)
+    return {"out": out}

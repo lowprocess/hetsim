@@ -287,7 +287,8 @@ def test_schematic_shows_critical_values(win):
     assert details(by["lna"], win.info["groups"])[0] == "21 dB"                        # follows the sliders
 
 
-def test_animated_sweep_and_xy_plot(app, tmp_path):
+def test_animated_sweep_and_xy_plot(monkeypatch, app, tmp_path):
+    monkeypatch.setattr("hetsim.viewer.model.SWEEP_BUDGET_S", 1e6)   # all the steps, however busy the machine
     from hetsim.desktop.app import MainWindow
     from hetsim.desktop.schematic import details
     from test_viewer import _xy_model
@@ -338,9 +339,33 @@ def test_analysis_dialog(win, app):
     assert "no product" in d.out.toPlainText()
     d.band.setText("nonsense")
     d.run_noise()
-    assert "low:high" in d.out.toPlainText()
-    d.run_match()
+    assert "low:high" in d.out.toPlainText() and d.plot.chart is None
+    d.run_wires()
     assert "ant.out" in d.out.toPlainText()
+    d.band.setText("10.6MHz:10.8MHz")
+    d.run_noise()
+    assert d.plot.chart["id"] == "nf" and d.pick.count() == 2
+    d.pick.setCurrentIndex(1)
+    assert d.plot.chart["id"] == "gain"
+    d.grab()                                                       # paints with a chart in place
+    d.look.setCurrentText("lna.in")
+    d.range.setText("88MHz:108MHz")
+    d.run_match()
+    assert d.plot.chart["id"] == "vswr" and len(d.plot.chart["series"]) == 2
+    d.grab()
+    d.bw.setText("200kHz")
+    d.run_budget()
+    assert "cum NF" in d.out.toPlainText() and "lna" in d.out.toPlainText() and d.plot.chart is None
+    d.vary.setCurrentText("lna.gain_db")
+    d.v_from.setText("5")
+    d.v_to.setText("25")
+    d.v_points.setValue(5)
+    d.run_vary()
+    assert d.plot.chart is not None and len(d.plot.chart["x"]) == 5
+    d.grab()
+    win.model.sweep_workers = 1
+    d.run_tolerance()
+    assert "no tolerances" in d.out.toPlainText()     # the VHF netlist has none
     d.close()
     win.open_analysis()
     assert win.analysis.isVisible() and win.analysis.source.count() == 2

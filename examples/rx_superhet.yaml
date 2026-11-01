@@ -1,0 +1,17 @@
+# Compare the architectures:
+#   python -m hetsim budget examples/rx_superhet.yaml examples/rx_direct_conversion.yaml --tone RF --bw 200kHz --offset 1MHz
+name: superhet
+blocks:
+  ant: {type: source, tones: [{name: RF, freq: 100MHz, power: -100}]}
+  pre: {type: filter, response: bandpass, family: butter, order: 3, f1: 80MHz, f2: 120MHz, insertion_loss_db: 0.5}
+  lna: {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, op1db_dbm: 18}
+  img: {type: filter, response: bandpass, family: butter, order: 5, f1: 88MHz, f2: 108MHz, insertion_loss_db: 1.5}
+  lo:  {type: source, name: LO, freq: 110.7MHz, power: 7}
+  mix: {type: mixer, conversion_loss_db: 6, iip3_dbm: 15, iip2_dbm: 50, lo_rf_isolation_db: 35, lo_if_isolation_db: 30, rf_if_isolation_db: 25, nf_db: 6.5}
+  iff: {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90, insertion_loss_db: 2}
+  ifa: {type: amplifier, gain_db: 40, nf_db: 4, oip3_dbm: 30, op1db_dbm: 15}
+  aa:  {type: filter, response: lowpass, family: butter, order: 7, fc: 15MHz}    # anti-alias: the amplifier's noise is wideband
+  adc: {type: adc, sample_rate: 40MHz, bits: 14, full_scale_dbm: 10, snr_db: 72, hd3_dbc: -85}
+chain: [ant, pre, lna, img, mix, iff, ifa, aa, adc]
+wires:
+  - [lo.out, mix.lo]

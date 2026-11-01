@@ -122,6 +122,9 @@ class Amplifier(Block):
             lin.add_spectrum(nonlinear_products(lin, ctx, self.oip3, self.oip2, self.harmonics))
         return {"out": lin, "in": incident["out"].scaled(-self.rev_iso)}
 
+    def linearity(self):
+        return (self.oip3 - self.gain if self.oip3 is not None else None), self.op1db
+
     def operating_point(self, incident):
         """Linear gain in dB at the signal level present: small signals see the compressed gain."""
         s = incident["in"]

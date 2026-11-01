@@ -32,16 +32,26 @@ from scipy.sparse import csc_matrix, identity
 from scipy.sparse.linalg import spsolve
 
 from .circuit import Circuit, Settings
-from .spectrum import vec_coeff, vec_label
-from .units import fmt_freq, mw_to_dbm, parse_freq
+from .spectrum import parse_label, vec_coeff, vec_label, vec_neg
+from .units import KT0_DBM_HZ, fmt_freq, mw_to_dbm, parse_freq
 
 T0 = 290.0
-KT0_DBM_HZ = 10 * math.log10(1.380649e-23 * T0 * 1e3)   # -173.98 dBm/Hz
 STIMULUS_DBM = -150.0     # level given to a muted stimulus tone: never disturbs the operating point
 SAME_F_HZ = 1.0           # a response this close to the frequency sought is that frequency
+REFINE_DB = 1.0           # band integration: add points where gain or noise moves more than this between two
+MIN_BAND_STEP_HZ = 2.0    # ...down to this spacing
+MAX_BAND_POINTS = 600     # ...and up to this many in a band
 
 
 # ---------------------------------------------------------------- the trace
+def path_gain(circuit: Circuit, nominal, ref, f_out: float, source_key, f_in: float) -> float:
+    """Power gain from a source port at f_in to the wave leaving `ref` at f_out; 0 if no path."""
+    if ref == source_key:
+        return 1.0 if abs(f_in - f_out) <= SAME_F_HZ else 0.0
+    tr = _Trace(circuit, nominal, ref, f_out)
+    return float(sum(tr.x[k] for k, (p, f) in enumerate(tr.nodes) if p == source_key and abs(f - f_in) <= SAME_F_HZ))
+
+
 class _Trace:
     """Gain from every (port, frequency) that reaches `root`, by best-first search and a sparse solve.
 
@@ -208,6 +218,15 @@ def _settings(settings):
     return st
 
 
+def _moved(a: dict, b: dict, limit_db: float) -> bool:
+    """Has the gain or the total noise changed by more than limit_db between two solved points?"""
+    for key in ("gain", "total"):
+        x, y = a[key], b[key]
+        if (x > 0) != (y > 0) or (x > 0 and abs(10 * math.log10(x / y)) > limit_db):
+            return True
+    return False
+
+
 def _trapz_weights(f: np.ndarray) -> np.ndarray:
     if len(f) == 1:
         return np.ones(1)
@@ -216,63 +235,88 @@ def _trapz_weights(f: np.ndarray) -> np.ndarray:
 
 
 def noise_figure(circuit: Circuit, source: str, port, band=None, tone=0, settings: Settings | None = None,
-                 points: int = 21) -> NoiseFigure:
+                 points: int = 21, product=None, nominal=None) -> NoiseFigure:
     """Noise figure from source block `source` to the wave leaving `port`.
 
     `tone` (index or name) picks the signal; the product of it reaching the port, within `band` if
     given, is the wanted response. A muted tone works: the rest of the netlist then sets the operating
-    point. With `band` (fmin, fmax) the noise is integrated over `points` frequencies, otherwise it
-    is the spot figure at the product. Raises ValueError when the tone doesn't reach the port.
+    point. With `band` (fmin, fmax) the noise is integrated over `points` frequencies and more wherever
+    a filter edge calls for them, otherwise it is the spot figure at the product. `product` (a label like
+    'LO - RF', or a vector) names the wanted response, where the strongest isn't it. `nominal`: a tone
+    solve with the stimulus present, to save repeating it. Raises ValueError when the tone doesn't reach the port.
     """
     band = (parse_freq(band[0]), parse_freq(band[1])) if band else None
     src = circuit[source]
     ref = circuit.port(port, "out")
     src_key = (source, src.default_out)
     with _stimulus(src, tone) as spec:
-        nominal = circuit.simulate(_settings(settings))
+        nominal = nominal or circuit.simulate(_settings(settings))
         wanted = [t for t in nominal[ref].band(*(band or (None, None))) if abs(vec_coeff(t.vec, spec.name)) == 1]
+        if product is not None:
+            v = parse_label(product) if isinstance(product, str) else tuple(product)
+            wanted = [t for t in wanted if t.vec in (v, vec_neg(v))]
         if not wanted:
             where = f" in {fmt_freq(band[0])} to {fmt_freq(band[1])}" if band else ""
             raise ValueError(f"no product of {spec.name} at {fmt_freq(spec.freq)} reaches {ref[0]}.{ref[1]}{where}; "
                              "retune the tone or its LOs")
         best = max(wanted, key=lambda t: t.power_dbm)
         c = vec_coeff(best.vec, spec.name)
-        grid = np.linspace(band[0], band[1], points) if band else np.array([best.freq])
-        total, sig, gain = np.zeros(len(grid)), np.zeros(len(grid)), np.zeros(len(grid))
-        own: dict[str, np.ndarray] = {}
         warn = [f"[{b}] {m}" for b, ms in nominal.warnings.items() for m in ms]
-        responses: dict[float, float] = {}
-        centre = int(np.argmin(np.abs(grid - best.freq)))
-        for i, fo in enumerate(grid):
+        f_centre = best.freq
+
+        def solve(fo: float) -> dict:
+            """Everything at one output frequency: signal, per-contributor noise, input responses."""
             tr = _Trace(circuit, nominal, ref, fo)
             if tr.diverged:
                 raise ValueError(f"a feedback loop has gain of one or more at {fmt_freq(fo)}: the circuit "
                                  "has no steady state there, so no noise figure")
             if tr.truncated and not any("truncated" in w for w in warn):
                 warn.append(f"trace truncated at {len(tr.nodes)} points: noise may be understated")
-            f_sig = spec.freq + c * (fo - best.freq)
+            f_sig = spec.freq + c * (fo - f_centre)
+            pt = {"sig": 0.0, "gain": 0.0, "own": {}, "resp": {}}
 
             def book(name, x):
-                own.setdefault(name, np.zeros(len(grid)))[i] += x
+                pt["own"][name] = pt["own"].get(name, 0.0) + x
 
-            for k, ((name, p), f) in enumerate(tr.nodes):
+            for k, ((name, q), f) in enumerate(tr.nodes):
                 if not tr.expanded[k] or tr.x[k] <= 0:
                     continue
-                b = circuit.blocks[name]
-                e = b.noise_emission(p, f, tr.ops[name])
-                if (name, p) == src_key:
+                e = circuit.blocks[name].noise_emission(q, f, tr.ops[name])
+                if (name, q) == src_key:
                     if abs(f - f_sig) <= SAME_F_HZ:
-                        sig[i] += tr.x[k] * e
-                        gain[i] += tr.x[k]
+                        pt["sig"] += tr.x[k] * e
+                        pt["gain"] += tr.x[k]
                     else:
                         book(f"{name}: input termination at other responses", tr.x[k] * e)
-                    if i == centre:
-                        responses[round(f, 1)] = tr.x[k]
+                    pt["resp"][round(f, 1)] = tr.x[k]
                 else:
                     book(name, tr.x[k] * e)
-            for (name, p), f, x in tr.terms:
-                book(f"{name}.{p} termination", x)
-            total[i] = sum(v[i] for v in own.values()) + sig[i]
+            for (name, q), f, x in tr.terms:
+                book(f"{name}.{q} termination", x)
+            pt["total"] = sum(pt["own"].values()) + pt["sig"]
+            return pt
+
+        c = vec_coeff(best.vec, spec.name)
+        pts = {float(f): solve(float(f)) for f in (np.linspace(band[0], band[1], points) if band else [best.freq])}
+        if band:
+            if band[0] <= best.freq <= band[1]:
+                pts.setdefault(best.freq, solve(best.freq))
+            # a coarse grid misses or misjudges a filter narrower than the band: refine where anything moves
+            for _ in range(40):
+                fs = sorted(pts)
+                new = [(x + y) / 2 for x, y in zip(fs, fs[1:])
+                       if y - x > MIN_BAND_STEP_HZ and _moved(pts[x], pts[y], REFINE_DB)]
+                if not new or len(pts) + len(new) > MAX_BAND_POINTS:
+                    break
+                for f in new:
+                    pts[f] = solve(f)
+        grid = np.array(sorted(pts))
+        total = np.array([pts[f]["total"] for f in grid])
+        sig = np.array([pts[f]["sig"] for f in grid])
+        gain = np.array([pts[f]["gain"] for f in grid])
+        names = {n for f in grid for n in pts[f]["own"]}
+        own = {n: np.array([pts[f]["own"].get(n, 0.0) for f in grid]) for n in names}
+        responses = pts[float(grid[np.argmin(np.abs(grid - best.freq))])]["resp"]
     w = _trapz_weights(grid)
     if not sig.dot(w) > 0:
         raise ValueError(f"the path from {spec.name} to {ref[0]}.{ref[1]} is too weak to trace")
@@ -452,7 +496,7 @@ class MismatchReport:
 
 def _lo_wires(circuit: Circuit) -> set:
     """Ports on wires that drive a mixer's LO port: from each one, back to the sources."""
-    seen, stack = set(), [(n, "lo") for n, b in circuit.blocks.items() if b.kind == "mixer"]
+    seen, stack = set(), [(n, "lo") for n, b in circuit.blocks.items() if "lo" in b.ports]
     while stack:
         peer = circuit.wires.get(stack.pop())
         if peer is None or peer in seen:
@@ -460,7 +504,7 @@ def _lo_wires(circuit: Circuit) -> set:
         seen.add(peer)
         seen.add(circuit.wires[peer])
         b = circuit[peer[0]]
-        if b.kind != "mixer":
+        if "lo" not in b.ports:
             stack += [(peer[0], p) for p in b.ports if p != peer[1] and p not in b.controls]
     return seen
 

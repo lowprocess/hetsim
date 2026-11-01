@@ -318,8 +318,8 @@ class MainWindow(QMainWindow):
         act("&Quit", QKeySequence.StandardKey.Quit, self.close)
         self._refresh_recent()
         tools = self.menuBar().addMenu("&Analysis")
-        a = QAction("&Noise figure and VSWR…", self)
-        a.setStatusTip("Noise figure from a source to a port, and the match at every wire")
+        a = QAction("&Noise figure, VSWR and budget…", self)
+        a.setStatusTip("Noise figure, port match, receiver budget, parameter sweeps and Monte Carlo")
         a.triggered.connect(self.open_analysis)
         tools.addAction(a)
 

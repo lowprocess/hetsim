@@ -141,6 +141,21 @@ def find_responses(circuit: Circuit, source: str, port: str, band, fmin, fmax, t
                     f = (s * fc - k) / c
                     if fmin <= f <= fmax:
                         cands.append(f)
+            # an ADC's alias responses: inputs to it that fold into the band, which no probe shows
+            for name, b in circuit.blocks.items():
+                if not hasattr(b, "sample_rate"):
+                    continue
+                for t in probe.incident((name, "in")):
+                    c = vec_coeff(t.vec, sym)
+                    if c == 0 or t.order > max_order:
+                        continue
+                    k = t.freq - c * f_nom
+                    for z in range(1, int(b.bw / b.fs) + 2):
+                        for fa in (z * b.fs - fc, z * b.fs + fc):
+                            for s in (1, -1):
+                                f = (s * fa - k) / c
+                                if fmin <= f <= fmax:
+                                    cands.append(f)
             cands = sorted(set(round(f, 3) for f in cands))
 
             found: dict[str, Response] = {}

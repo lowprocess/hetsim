@@ -25,7 +25,7 @@ from ..circuit import Settings
 from ..netlist import from_dict, to_dict
 from ..units import fmt_freq, parse_db, parse_freq
 
-FREQ_KEYS = {"fc", "f0", "bw", "f1", "f2", "fmin", "fmax"}
+FREQ_KEYS = {"fc", "f0", "bw", "f1", "f2", "fmin", "fmax", "sample_rate", "analog_bw"}
 CHOICES = {
     "response": ["lowpass", "highpass", "bandpass", "bandstop"],
     "family": ["butter", "cheby1", "cheby2", "ellip", "bessel"],
@@ -33,6 +33,7 @@ CHOICES = {
     "spur_table": sorted(SPUR_PRESETS),
     "detect": ["peak", "total"],
     "scale": ["log", "linear"],
+    "sideband": ["upper", "lower"],
 }
 BOOLS = {"harmonics"}
 SKIP = {"file", "tones", "freq", "power", "name", "phase", "harmonics_dbc"}
@@ -68,6 +69,9 @@ RANGES = {
     "order": (1, 12, 1, 3),
     "max_order": (2, 20, 1, 4),
     "nf_db": (0, 30, 0.1, 3), "vswr": (1, 10, 0.05, 1.5),
+    "gain_imbalance_db": (-3, 3, 0.05, 0.5), "phase_imbalance_deg": (-20, 20, 0.1, 2),
+    "bits": (4, 24, 1, 14), "full_scale_dbm": (-20, 30, 0.5, 10), "snr_db": (20, 120, 0.5, 70),
+    "hd2_dbc": (-120, -30, 1, -80), "hd3_dbc": (-120, -30, 1, -80),
 }
 ISO = (0, 100, 0.5, 40)
 SWEEP_BUDGET_S = 0.5   # time the viewer spends on a band sweep per update (automatic steps)
@@ -128,6 +132,8 @@ ADD_DEFAULTS = {
     "source": {"freq": "10MHz", "power": -30},
     "amplifier": {"gain_db": 10},
     "mixer": {"conversion_loss_db": 6},
+    "iq_mixer": {"conversion_loss_db": 6, "sideband": "lower"},
+    "adc": {"sample_rate": "100MHz", "bits": 14},
     "filter": {"response": "lowpass", "family": "butter", "order": 3, "fc": "100MHz"},
     "ideal_filter": {"fmin": "1MHz", "fmax": "100MHz"},
     "attenuator": {"loss_db": 3},
@@ -136,7 +142,7 @@ ADD_DEFAULTS = {
     "detector": {"detect": "peak"},
     "xyplot": {},
 }
-_PREFIX = {"source": "src", "amplifier": "amp", "mixer": "mix", "filter": "flt", "ideal_filter": "flt",
+_PREFIX = {"source": "src", "amplifier": "amp", "mixer": "mix", "iq_mixer": "iq", "adc": "adc", "filter": "flt", "ideal_filter": "flt",
            "attenuator": "att", "splitter": "split", "load": "load", "detector": "det", "xyplot": "xy"}
 _NAME = re.compile(r"[A-Za-z_][\w-]*$")
 _KEY = re.compile(r"""["']?([^"'\s:#\-\[{][^"':]*?)["']?[ \t]*:(?:[ \t]|$)""")
@@ -275,6 +281,8 @@ def source_freqs(d):
                 ts = ToneSpec.from_dict(t)
                 if not ts.mute:
                     out += ts.grid() if ts.mode == "wideband" else [ts.freq]
+        if spec.get("type") == "adc":   # its samples must fall on the FFT grid too
+            out.append(parse_freq(spec["sample_rate"]))
     return out
 
 
@@ -411,10 +419,11 @@ def describe(d: dict) -> list[dict]:
             else:
                 lo, hi, step, fallback = RANGES.get(pname, ISO if pname.endswith("isolation_db") else GENERIC)
                 v = parse_db(raw) if raw is not None else fallback
-                if pname in ("order", "max_order"):
+                if pname in ("order", "max_order", "bits"):
                     entry.update(kind="int", value=int(v), min=lo, max=hi, step=1)
                 else:
-                    unit = ":1" if pname == "vswr" else "dBm" if pname.endswith("_dbm") else "dB"
+                    unit = (":1" if pname == "vswr" else "deg" if pname.endswith("_deg") else "dBc" if pname.endswith("_dbc")
+                            else "dBm" if pname.endswith("_dbm") else "dB")
                     entry.update(kind="number", value=v, min=min(lo, v), max=max(hi, v), step=step, unit=unit)
                 if kind == "filter" and pname == "ripple_db":
                     entry["when"] = {"family": ["cheby1", "ellip"]}
@@ -906,7 +915,7 @@ def lo_sources(c) -> set[str]:
     """Source blocks that drive a mixer's LO port, traced back through two-ports and splitters."""
     out = set()
     for name, b in c.blocks.items():
-        if b.kind != "mixer":
+        if "lo" not in b.ports:
             continue
         port, seen = (name, "lo"), set()
         while port in c.wires and port not in seen:

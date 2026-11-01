@@ -59,6 +59,17 @@ python -m hetsim noise examples/vhf_noise_match.yaml --source ant --tone RF --po
 python -m hetsim match examples/vhf_noise_match.yaml --tone RF
 python -m hetsim match examples/vhf_noise_match.yaml --port lna.in --range 88MHz:108MHz --points 11
 
+# stage-by-stage budget and dynamic range; several netlists compare side by side
+python -m hetsim budget examples/vhf_noise_match.yaml --tone RF --bw 200kHz --offset 1MHz
+python -m hetsim budget examples/vhf_noise_match.yaml examples/vhf_single_conversion.yaml --tone RF --bw 200kHz
+python -m hetsim budget examples/vhf_noise_match.yaml --tone RF --bw 200kHz --vary lna.gain_db=0:30:7
+
+# Monte Carlo over the netlist's tolerances, with yield against limits
+python -m hetsim tolerance examples/vhf_noise_match.yaml --tone RF --bw 200kHz --runs 100 --spec 'nf_db<=3.2'
+
+# two architectures side by side
+python -m hetsim budget examples/rx_superhet.yaml examples/rx_direct_conversion.yaml --tone RF --bw 200kHz --offset 1MHz
+
 # the viewers
 python -m hetsim app examples/vhf_single_conversion.yaml
 python -m hetsim view examples/vhf_single_conversion.yaml

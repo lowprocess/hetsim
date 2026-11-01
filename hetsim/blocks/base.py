@@ -137,6 +137,10 @@ class Block:
         """Called when the block is added to a circuit."""
         self.name = name
 
+    def linearity(self) -> tuple[float | None, float | None]:
+        """(IIP3 at the signal input, output P1dB) in dBm, for the receiver budget; None: not limiting."""
+        return None, None
+
     def __repr__(self) -> str:
         p = ", ".join(f"{k}={v!r}" for k, v in self.params.items())
         return f"{type(self).__name__}({p})"

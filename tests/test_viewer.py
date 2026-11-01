@@ -399,7 +399,8 @@ def _xy_model(tmp_path):
     return m
 
 
-def test_xy_plot_of_a_detector_over_the_sweep(tmp_path):
+def test_xy_plot_of_a_detector_over_the_sweep(tmp_path, monkeypatch):
+    monkeypatch.setattr("hetsim.viewer.model.SWEEP_BUDGET_S", 1e6)   # all the steps, however busy the machine
     m = _xy_model(tmp_path)
     info = m.info()
     assert not any(p.endswith((".sweep", ".x", ".y")) or p == "det1.out" for p in info["ports"])   # not probes
@@ -437,3 +438,62 @@ def test_xy_plot_spans_the_band_on_an_output_grid(tmp_path):
     assert xy["x_tone"] == "LO" and len(xy["x"]) == 41
     assert xy["x"][0] == pytest.approx(108.7e6) and xy["x"][-1] == pytest.approx(112.7e6)   # X/Y: the whole band
     assert xy["x"][1] - xy["x"][0] == pytest.approx(0.1e6)                # evenly
+
+
+# ---------------------------------------------------------------- analysis
+NOISE = Path(__file__).parent.parent / "examples" / "vhf_noise_match.yaml"
+
+
+def test_analysis_options_and_kinds():
+    from hetsim.viewer.analysis import analyse, options
+    m = ViewerModel.from_file(NOISE)
+    o = options(m)
+    assert o["sources"]["ant"] == ["RF"] and "lna.in" in o["ports"] and "ant.out" not in o["outputs"]
+    assert any(v["path"] == "lna.gain_db" for v in o["vary"]) and any(v["path"] == "ant.tones.0.power" for v in o["vary"])
+    base = {"source": "ant", "tone": "RF"}
+    r = analyse(m, {"kind": "noise", "port": "ifamp.out", "band": "10.6MHz:10.8MHz", **base})
+    assert "noise figure" in r["text"] and [c["id"] for c in r["charts"]] == ["nf", "gain"]
+    assert not analyse(m, {"kind": "noise", "port": "ifamp.out", **base})["charts"]    # spot: a table only
+    r = analyse(m, {"kind": "match", "port": "lna.in", "range": "88MHz:108MHz", "points": 5, **base})
+    assert [s["name"] for s in r["charts"][0]["series"]] == ["Typical", "Worst case"] and len(r["charts"][0]["x"]) == 5
+    assert "lna.in" in analyse(m, {"kind": "wires", **base})["text"]
+    assert "cum NF" in analyse(m, {"kind": "budget", "bw": "200kHz", **base})["text"]
+    r = analyse(m, {"kind": "vary", "param": "lna.gain_db", "from": 5, "to": 25, "points": 3, "bw": "200kHz", **base})
+    assert {c["id"] for c in r["charts"]} >= {"nf_db", "sfdr_db"} and all(c["y_unit"] for c in r["charts"])
+    assert len({c["y_unit"] for c in r["charts"][:1]}) == 1
+
+
+def test_analysis_uses_the_sliders_and_reports_errors():
+    from hetsim.viewer.analysis import analyse
+    m = ViewerModel.from_file(NOISE)
+    base = {"kind": "noise", "source": "ant", "tone": "RF", "port": "ifamp.out"}
+    low = analyse(m, base)["text"]
+    high = analyse(m, {**base, "params": {"lna": {"nf_db": 8.0}}})["text"]
+    assert low != high
+    assert "low:high" in analyse(m, {**base, "band": "1MHz"})["error"]
+    assert "no product" in analyse(m, {**base, "band": "1GHz:2GHz"})["error"]
+    assert "range" in analyse(m, {"kind": "match", "port": "lna.in"})["error"]
+    assert "unknown analysis" in analyse(m, {"kind": "nope"})["error"]
+    assert "no parameter" in analyse(m, {"kind": "vary", "param": "nope.x", "from": 1, "to": 2, "tone": "RF"})["error"]
+
+
+def test_chart_gaps_are_json_null():
+    from hetsim.viewer.analysis import _clean
+    assert _clean([1.0, float("inf"), float("nan"), None]) == [1.0, None, None, None]
+
+
+def test_analysis_over_http():
+    m = ViewerModel.from_file(NOISE)
+    srv = make_server(m, 0)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        def post(body):
+            req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}/api/analysis",
+                                         json.dumps(body).encode(), method="POST")
+            return json.load(urllib.request.urlopen(req))
+        assert "sources" in post({"kind": "options"})
+        r = post({"kind": "match", "source": "ant", "tone": "RF", "port": "ant.out", "range": "88MHz:108MHz", "points": 3})
+        assert r["charts"][0]["series"][0]["y"][0] == pytest.approx(2)
+    finally:
+        srv.shutdown()
+        srv.server_close()

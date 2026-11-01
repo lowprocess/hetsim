@@ -56,6 +56,9 @@ class _Handler(BaseHTTPRequestHandler):
             req = json.loads(self.rfile.read(n) or b"{}")
             if self.path == "/api/sim":
                 self._json(_finite(self.model.simulate(req)))
+            elif self.path == "/api/analysis":
+                from .analysis import analyse, options
+                self._json(options(self.model) if req.get("kind") == "options" else analyse(self.model, req))
             elif self.path == "/api/export":
                 d = self.model.netlist(req.get("params", {}), req.get("resolution"))
                 self._send(200, dump_text(d, req.get("format", "yaml")).encode(), "text/plain; charset=utf-8")

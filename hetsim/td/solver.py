@@ -92,6 +92,8 @@ def make_plan(circuit: Circuit, tds: TDSettings, tone_result) -> Plan:
     for b in circuit.blocks.values():
         for t in getattr(b, "tones", []):
             freqs.append(t.freq)
+        if getattr(b, "sample_rate", None):   # an ADC's samples must fall on the grid too
+            freqs.append(b.sample_rate)
     if tds.resolution is not None:
         df = parse_freq(tds.resolution)
     else:

@@ -251,6 +251,13 @@ def test_noise_bandwidth_of_a_filter():
     assert r.noise_bw_hz == pytest.approx(200e3 * (math.pi / 8) / math.sin(math.pi / 8), rel=0.01)
 
 
+def test_narrow_filter_in_a_wide_band_is_not_missed():
+    c = chain(Amplifier(gain_db=10, nf_db=3), IdealFilter(fmin="100MHz", fmax="100.001MHz", rejection_db=100))
+    r = noise_figure(c, "ant", "b1.out", band=("50MHz", "150MHz"))
+    assert r.noise_bw_hz == pytest.approx(1e3, rel=0.25)
+    assert r.gain_db == pytest.approx(10, abs=1e-6)
+
+
 def test_muted_stimulus_is_found_and_put_back():
     c = Circuit()
     c.add("ant", Source(tones=[{"name": "RF", "freq": "100MHz", "power": -40, "mute": True},

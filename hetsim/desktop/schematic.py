@@ -45,7 +45,7 @@ def symbol(kind: str, response: str | None):
         body.lineTo(14, 42)
         body.closeSubpath()
         return body, glyph, None, {"l": 14, "r": 12, "t": 0, "b": 42}
-    if kind == "mixer":
+    if kind in ("mixer", "iq_mixer"):
         body.addEllipse(QPointF(32, 24), 17, 17)
         glyph.moveTo(20, 12)
         glyph.lineTo(44, 36)
@@ -150,7 +150,7 @@ def details(b: dict, groups: list, readings: dict | None = None) -> list[str]:
                             join(opt("oip2_dbm", "OIP2") or opt("iip2_dbm", "IIP2"))) if x]
     if t == "attenuator":
         return [opt("loss_db", "", "dB")] if v("loss_db") is not None else []
-    if t == "mixer":
+    if t in ("mixer", "iq_mixer"):
         return [x for x in (join(opt("conversion_loss_db", "CL", "dB"), opt("lo_drive_dbm", "LO")),
                             join(opt("iip3_dbm", "IIP3"), opt("iip2_dbm", "IIP2")),
                             opt("max_order", "order ≤", "")) if x]

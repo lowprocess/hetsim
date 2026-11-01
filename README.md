@@ -49,6 +49,8 @@ antenna, and how a second LO's leakage comes back through the first IF. A port's
 | `mixer` | ports `rf`, `lo`, `if`. Ideal multiplier by default (LO ± RF, nothing else). Optional: conversion loss, LO→RF, LO→IF, RF→IF and RF→LO isolation, IIP3, IIP2, m×n spur table, nominal LO drive (warns if off), `max_order` (depth: only m×n spurs with m + n ≤ it; 2 = the 1×1 product only). Reciprocal, so it also up-converts. |
 | `amplifier` | gain, OIP3/IIP3, OIP2/IIP2 (two-tone IM, HD2, HD3), output P1dB (Rapp compression from total power), reverse isolation, noise figure (`nf_db`) |
 | `filter` | Butterworth, Chebyshev I/II, elliptic or Bessel LP/HP/BP/BS. Insertion loss and a finite ultimate rejection (`max_rejection_db`, e.g. ~80 dB for a crystal filter) |
+| `iq_mixer` | ports `rf`, `lo`, `if`. A quadrature pair and its 90° combination as one block: an image-reject mixer, or the analogue half of a low-IF or zero-IF receiver. Everything a `mixer` has, plus `sideband`, `gain_imbalance_db`, `phase_imbalance_deg` |
+| `adc` | `sample_rate`, `bits`, `full_scale_dbm`, optional `snr_db`, `hd2_dbc`, `hd3_dbc`, `analog_bw`. Aliases carry the sampling frequency's symbol, e.g. `RF - adc_FS` |
 | `sparam` | Touchstone `.s2p` (\|S21\|, \|S12\|; `vswr: file` adds S11 and S22), e.g. a filter out of openEMS, mom25d or Qucs |
 | `ideal_filter`, `attenuator`, `splitter`, `load` | as named |
 
@@ -207,9 +209,131 @@ The trace works backwards from the output around a tone-solver operating point:
 - **`--sweep`.** Steps the `mode: sweep` tones as a band sweep does, and the stimulus with
   them if it has a band. Give the stimulus and its LO tracking bands.
 
-`noise_figure()` and `noise_sweep()` are the same from Python. The desktop app has both
-analyses under **Analysis > Noise figure and VSWR…**, for the circuit as the sliders
-have it, and both viewers offer `nf_db` and a single-number `vswr` as parameters.
+`noise_figure()` and `noise_sweep()` are the same from Python. Both viewers offer `nf_db` and a
+single-number `vswr` as parameters.
+
+## Receiver budget
+
+`hetsim budget` follows the signal path stage by stage and adds it up to sensitivity and
+dynamic range, naming what sets each figure. The defaults find the input source, its first
+tone and the end of the path, so netlists with different block names can be compared.
+
+```
+$ python -m hetsim budget examples/vhf_noise_match.yaml --tone RF --bw 200kHz --offset 1MHz
+stage             frequency    gain cum gain  cum NF cum IIP3 cum IP1dB
+pre                 100 MHz   -0.45    -0.45    0.97        -         -
+lna                 100 MHz   18.01    17.55    2.17     12.5       1.4
+...
+noise figure                 2.89 dB                  set by lna
+input floor (MDS)            -118.8 dBm
+IIP3                         12.5 dBm                 set by lna
+spur-free dynamic range      87.5 dB
+...
+$ python -m hetsim budget a.yaml b.yaml --bw 200kHz --offset 1MHz     # side by side
+```
+
+- **Stage rows** are spot figures at the signal's frequency. The summary is over the channel
+  `--bw`, centred on the product, so the two differ slightly when a filter has ripple.
+- **Gain and NF** come from the noise trace, so filter shapes, image noise, mismatches and
+  compression are all in them.
+- **IIP3** uses the standard in-phase cascade, not the tone solver's power sum, and matches a
+  time-domain two-tone run. With `--offset` the two tones sit at f + offset and f + 2·offset, and
+  each stage is referred with the gain they have up to it, so a roofing filter takes the stages
+  behind it out of the sum.
+- **Input P1dB** is the first stage to compress, OP1dB + 1 less the gain to its output. Only an
+  amplifier's `op1db_dbm` counts.
+- **Dynamic range:** spur-free is 2/3 (IIP3 - floor). Blocking is limited by compression at the
+  offset and by reciprocal mixing, -L(offset) - 10·log(noise bandwidth), from the phase noise of
+  the LOs on the path.
+- **Worst other response** comes from the noise trace, so it covers m×1 responses only.
+  `hetsim responses` finds the higher-order ones.
+
+To see a trade-off, step one parameter and read every figure at each value:
+
+```
+$ python -m hetsim budget examples/vhf_noise_match.yaml --tone RF --bw 200kHz --vary lna.gain_db=0:30:7
+             lna.gain_db       NF     gain    floor     IIP3    IP1dB     SFDR      BDR
+                       0    13.13    12.05  -108.60    13.36    19.45    81.31   128.05
+                       5     8.83    17.05  -112.91     8.36    14.45    80.84   127.35
+                      10     5.49    22.05  -116.24     3.36     9.45    79.74   125.69
+                      15     3.51    27.05  -118.22    -1.64     4.45    77.72   122.67
+                      20     2.64    32.05  -119.09    -6.64    -0.55    74.97   118.54
+...
+```
+
+In this receiver, more LNA gain keeps lowering the NF but costs intercept faster, so spur-free
+dynamic range falls throughout, and the choice is how much of it to trade for sensitivity.
+
+`receiver_budget()`, `compare_budgets()` and `budget_sweep()` are the same from Python.
+
+## Tolerances and yield
+
+`hetsim tolerance` repeats the budget with parameters drawn at random, then gives the spread of
+each figure, what drives it, and the yield against your limits. Tolerances are ± amounts on the
+blocks. The solvers ignore them, and they survive saving.
+
+```yaml
+lna: {type: amplifier, gain_db: 18, nf_db: 1.2, tolerance: {gain_db: 1.5, nf_db: 0.3}}
+iff: {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, tolerance: {f0: 20kHz}}
+```
+
+```
+$ python -m hetsim tolerance examples/vhf_noise_match.yaml --tone RF --bw 200kHz --spec 'nf_db<=3.2' --spec 'sfdr_db>=75.5'
+figure    nominal     mean    std      min       5%      95%      max  driven by
+NF           2.89     2.90   0.12     2.56     2.73     3.12     3.28  lna.nf_db 49%, lna.gain_db 45%
+...
+```
+
+- **Distribution:** with `--dist normal` (the default), the amount is 3σ and draws stop there, so
+  no run leaves the tolerance. `--dist uniform` is flat across it. Parameters are independent.
+- **Yield** comes with a 95% interval, which shows when you need more `--runs`. A run with no
+  answer, such as a filter drawn away from the signal, counts as a failure.
+- **Drivers** are the squared correlation of each parameter with the figure. They are rough where a
+  response is strongly nonlinear, such as on a filter edge.
+- **Repeatable:** the same `--seed` gives the same draws, whatever the number of `--workers`.
+- `--tol lna.gain_db=1.5` adds or overrides a tolerance without editing the netlist.
+
+`monte_carlo()` is the same from Python.
+
+## Analysis in the viewers
+
+Both viewers have all of this for the circuit as the sliders have it: in the desktop app under
+**Analysis > Noise figure, VSWR and budget…**, and in the browser viewer behind the **Analysis**
+button. Text tables come with charts where there is a curve to draw: NF and gain across a band, VSWR
+and return loss across frequency, each figure against a varied parameter, and the share of Monte
+Carlo runs at or below each value of a figure. Each chart holds one measure, and a list picks
+between them. Monte Carlo runs while you wait, so start with few runs on a large circuit.
+
+## Comparing architectures
+
+`iq_mixer` and `adc` let a superhet be compared with image-reject and direct-conversion receivers:
+
+```
+$ python -m hetsim budget examples/rx_superhet.yaml examples/rx_direct_conversion.yaml --tone RF --bw 200kHz --offset 1MHz
+```
+
+**`iq_mixer`.** One sideband comes through at the conversion loss. The other is down by the image
+rejection from the imbalances, (1 + 2g·cos φ + g²) / (1 − 2g·cos φ + g²), which is infinite until
+you give one. Noise at the image is cancelled the same way, so there's no 3 dB penalty behind an LNA.
+
+- The tone solver uses this closed form per product. The time-domain solver runs real I and Q branches.
+  The two agree on wanted and image levels, third-harmonic responses and IM2.
+- It is one block, not separate I and Q ports, because the tone solver only tracks power: it couldn't
+  show two wires cancelling, and noise on two wires would add. Filters inside the I and Q branches
+  can't be modelled, and only one `adc` is drawn for a complex baseband.
+- Set `iip2_dbm` for direct conversion: IM2 lands in the channel, and the budget reports IIP2 at the
+  mixers. DC offset and flicker noise aren't modelled, and a product exactly at DC is dropped, so
+  place the signal a little off the LO.
+
+**`adc`.** The tone solver folds every tone into the first Nyquist zone, so an alias shows as a
+labelled product, and `hetsim responses` finds alias responses. The time-domain solver samples, clips
+and quantises for real, and its measured SNR matches 6.02·bits + 1.76 dB.
+
+- **Noise:** the floor is full scale less the SNR, spread over the Nyquist band. Noise from every zone
+  up to `analog_bw` folds in unless a filter stops it, so a missing anti-alias filter shows in the NF.
+- **In the budget:** full scale sets input P1dB, and `hd3_dbc` sets an intercept. It clips only in the
+  time-domain solver; the tone solver warns instead.
+- **Filters after it** count as analogue for noise, so they add a little kT0 that a digital filter wouldn't.
 
 ## Time-domain / FFT solver
 
@@ -499,8 +623,7 @@ These are things that are not modelled yet, roughly in the order they would matt
   thermal plus `nf_db`, flat with frequency; the source is always at T0, and
   neither solver draws noise on a spectrum.
 - **Phase and coherence.** In the tone solver, same-frequency products add in
-  power. The TD solver handles phase, but there is no quadrature (IQ) mixer block
-  yet for image-reject architectures.
+  power; the TD solver handles phase.
 - **LO model.** The strongest tone at the LO port is the LO. Other tones there only
   leak (phase noise on the LO itself is modelled; see Phase noise).
 - **Two-tone nonlinearity.** It uses the strongest `im_max_tones` tones (default 24)
@@ -508,7 +631,7 @@ These are things that are not modelled yet, roughly in the order they would matt
 
 ## Tests
 
-`pytest tests` runs 162 checks. They compare against hand-calculated values:
+`pytest tests` runs 252 checks. They compare against hand-calculated values:
 mixer products, isolation, spur scaling, IM3/IM2 and harmonics, P1dB, filter
 edges and phase, reverse leakage, image rejection and netlist round trip. They
 also check that the TD and tone solvers agree, and that same-bin products add

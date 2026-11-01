@@ -1,4 +1,4 @@
-"""Command line: python -m hetsim {run,responses,noise,match,blocks,view,app} ..."""
+"""Command line: python -m hetsim {run,responses,noise,match,budget,tolerance,blocks,view,app} ..."""
 from __future__ import annotations
 
 import argparse
@@ -10,8 +10,10 @@ import numpy as np
 from . import __datecode__
 from .analysis import find_responses, response_sweep
 from .blocks import REGISTRY
+from .budget import budget_sweep, compare_budgets, receiver_budget
 from .netlist import load
 from .smallsignal import match_sweep, mismatch_report, noise_figure, noise_sweep, port_match
+from .tolerance import monte_carlo
 from .units import parse_db, parse_freq
 
 
@@ -80,6 +82,38 @@ def main(argv=None):
     m.add_argument("--tone", help="without --port: follow this tone down the chain instead of each wire's strongest")
     m.add_argument("--json", action="store_true")
 
+    g = sub.add_parser("budget", help="stage-by-stage receiver budget and dynamic range; several netlists compare")
+    g.add_argument("netlist", nargs="+")
+    g.add_argument("--source", help="input source block (default: the first source not driving an LO)")
+    g.add_argument("--tone", help="the signal tone (default: the source's first)")
+    g.add_argument("--port", help="output port (default: the end of the signal path)")
+    g.add_argument("--product", help="the wanted product, e.g. 'LO - RF' (default: the strongest at the output)")
+    g.add_argument("--bw", help="channel bandwidth, e.g. 200kHz (default: figures per Hz)")
+    g.add_argument("--offset", help="blocker offset, e.g. 400kHz: IM and blocking with filter selectivity counted "
+                                    "(default: in-band tones)")
+    g.add_argument("--snr", type=parse_db, default=10.0, help="SNR for the sensitivity figure, dB")
+    g.add_argument("--vary", help="repeat the budget with a parameter stepped: lna.gain_db=5:30:11 (from:to:points)")
+    g.add_argument("--json", action="store_true")
+
+    t = sub.add_parser("tolerance", help="Monte Carlo of the receiver budget over the netlist's tolerances")
+    t.add_argument("netlist")
+    t.add_argument("--runs", type=int, default=500)
+    t.add_argument("--seed", type=int, default=1)
+    t.add_argument("--dist", choices=["normal", "uniform"], default="normal",
+                   help="normal: the tolerance is 3 sigma, cut off there; uniform: flat across it")
+    t.add_argument("--tol", action="append", default=[], metavar="BLOCK.PARAM=AMOUNT",
+                   help="add or override a tolerance, e.g. lna.gain_db=1.5 (repeatable)")
+    t.add_argument("--spec", action="append", default=[], metavar="FIGURE<=VALUE",
+                   help="a limit for the yield, e.g. nf_db<=4 or sfdr_db>=80 (repeatable)")
+    t.add_argument("--source")
+    t.add_argument("--tone")
+    t.add_argument("--port")
+    t.add_argument("--product")
+    t.add_argument("--bw", help="channel bandwidth, e.g. 200kHz")
+    t.add_argument("--offset", help="blocker offset, e.g. 1MHz")
+    t.add_argument("--workers", type=int, help="processes (default: one per physical core; 1: none)")
+    t.add_argument("--json", action="store_true")
+
     sub.add_parser("blocks", help="list block types and their parameters")
 
     v = sub.add_parser("view", help="open the live FFT viewer in a browser")
@@ -114,6 +148,12 @@ def main(argv=None):
         from .viewer import serve
         serve(a.netlist, port=a.port, open_browser=not a.no_browser, workers=a.workers)
         return 0
+
+    if a.cmd == "budget":
+        return _budget(a)
+
+    if a.cmd == "tolerance":
+        return _tolerance(a)
 
     circuit, st = load(a.netlist)
 
@@ -182,6 +222,70 @@ def main(argv=None):
             ax.figure.savefig(a.plot, dpi=150)
             plt.close(ax.figure)
         return 0
+
+
+def _budget(a):
+    rows = []
+    try:
+        if a.vary:
+            return _budget_vary(a)
+        for path in a.netlist:
+            c, st = load(path)
+            rows.append(receiver_budget(c, a.source, a.tone, a.port, a.bw, a.offset, a.snr, st, a.product))
+    except (ValueError, KeyError) as e:
+        print(f"hetsim budget: {e}", file=sys.stderr)
+        return 1
+    if a.json:
+        json.dump([r.to_dict() for r in rows], sys.stdout, indent=1)
+        print()
+    elif len(rows) == 1:
+        print(rows[0].table())
+    else:
+        print(compare_budgets(rows))
+    return 0
+
+
+def _tolerance(a):
+    try:
+        tols = {}
+        for item in a.tol:
+            k, sep, v = item.partition("=")
+            if not sep:
+                raise ValueError(f"--tol {item!r}: write block.parameter=amount")
+            tols[k] = v
+        c, st = load(a.netlist)
+        mc = monte_carlo(c, a.runs, tols or None, a.spec, a.dist, a.seed, st, workers=a.workers, source=a.source,
+                         tone=a.tone, port=a.port, bw=a.bw, offset=a.offset, product=a.product)
+    except (ValueError, KeyError) as e:
+        print(f"hetsim tolerance: {e.args[0] if e.args else e}", file=sys.stderr)
+        return 1
+    if a.json:
+        json.dump(mc.to_dict(), sys.stdout, indent=1)
+        print()
+    else:
+        print(mc.table())
+    return 0
+
+
+def _budget_vary(a):
+    if len(a.netlist) != 1:
+        raise ValueError("--vary takes one netlist")
+    param, _, spec = a.vary.partition("=")
+    try:
+        lo, hi, n = spec.split(":")
+        values = np.linspace(parse_db(lo), parse_db(hi), int(n)).tolist()
+    except ValueError:
+        raise ValueError(f"--vary {a.vary!r}: write block.parameter=from:to:points") from None
+    c, st = load(a.netlist[0])
+    sw = budget_sweep(c, param, values, st, source=a.source, tone=a.tone, port=a.port, bw=a.bw, offset=a.offset,
+                      snr_db=a.snr, product=a.product)
+    if a.json:
+        json.dump([{"value": v, "budget": b.to_dict() if b else None} for v, b in zip(sw.values, sw.budgets)],
+                  sys.stdout, indent=1)
+        print()
+    else:
+        print(sw.table())
+    return 0
 
 
 def _noise(a, circuit, st):

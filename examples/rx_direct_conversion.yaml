@@ -1,0 +1,28 @@
+# Direct conversion with I/Q baseband: the signal sits 100 kHz above the LO, its image 100 kHz below,
+# so only the I/Q balance separates them, and second-order products land in the channel.
+#   python -m hetsim budget examples/rx_superhet.yaml examples/rx_direct_conversion.yaml --tone RF --bw 200kHz --offset 1MHz
+name: direct conversion
+blocks:
+  ant: {type: source, tones: [{name: RF, freq: 100.1MHz, power: -100}]}
+  pre: {type: filter, response: bandpass, family: butter, order: 3, f1: 80MHz, f2: 120MHz, insertion_loss_db: 0.5}
+  lna: {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, op1db_dbm: 18}
+  lo:  {type: source, name: LO, freq: 100MHz, power: 7}
+  iq:
+    type: iq_mixer
+    sideband: upper
+    conversion_loss_db: 6
+    gain_imbalance_db: 0.2
+    phase_imbalance_deg: 1.5
+    iip3_dbm: 15
+    iip2_dbm: 50
+    lo_rf_isolation_db: 35
+    lo_if_isolation_db: 30
+    rf_if_isolation_db: 25
+    nf_db: 6.5
+  bb:  {type: filter, response: lowpass, family: butter, order: 5, fc: 200kHz, insertion_loss_db: 1}
+  bba: {type: amplifier, gain_db: 40, nf_db: 4, oip3_dbm: 30, op1db_dbm: 15}
+  aa:  {type: filter, response: lowpass, family: butter, order: 7, fc: 15MHz}    # anti-alias: the amplifier's noise is wideband
+  adc: {type: adc, sample_rate: 40MHz, bits: 14, full_scale_dbm: 10, snr_db: 72, hd3_dbc: -85}
+chain: [ant, pre, lna, iq, bb, bba, aa, adc]
+wires:
+  - [lo.out, iq.lo]

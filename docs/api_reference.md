@@ -24,6 +24,8 @@ Everything here imports from `hetsim`. The docstrings have the details.
 | `Filter` | `filter` | Analytic Butterworth, Chebyshev, elliptic and Bessel responses |
 | `IdealFilter` | `ideal_filter` | Brick wall |
 | `SParamFilter` | `sparam` | A Touchstone `.s2p` file |
+| `IQMixer` | `iq_mixer` | Quadrature pair and combination: sideband, gain and phase imbalance, and all a `Mixer` has |
+| `ADC` | `adc` | Aliasing, clipping, quantisation, noise floor, harmonics |
 | `Attenuator` | `attenuator` | Flat loss |
 | `Splitter` | `splitter` | 2-way splitter or combiner |
 | `Load` | `load` | Termination |
@@ -55,6 +57,10 @@ All RF blocks take `vswr`. `register(kind)` adds a block type, and `REGISTRY` ho
 | `port_match(circuit, port, freq)` | `PortMatch`: VSWR, return loss, mismatch loss, worst case |
 | `match_sweep(circuit, port, freqs)` | `MatchSweep`: the same across frequency |
 | `mismatch_report(circuit, tone=None)` | `MismatchReport`: both ends of every wire, with ripple |
+| `receiver_budget(circuit, source, tone, port, bw, offset, snr_db)` | `Budget`: stages, sensitivity, dynamic range, what sets each |
+| `compare_budgets(budgets)` | Text: several budgets side by side |
+| `budget_sweep(circuit, param, values, ...)` | `BudgetSweep`: the budget with one parameter stepped |
+| `monte_carlo(circuit, runs, tolerances, specs, dist, seed)` | `MonteCarlo`: spread, drivers and yield over the tolerances |
 
 ## Netlists
 

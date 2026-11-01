@@ -159,6 +159,19 @@ summary { transition: background 0.4s; }
   #plots { grid-template-rows: 260px 360px 140px auto; }
   #plots.nosch { grid-template-rows: 360px 140px auto; }
 }
+#andlg { width: min(900px, calc(100vw - 32px)); max-height: calc(100vh - 32px); padding: 16px; color: var(--text-primary);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: 8px; }
+#andlg::backdrop { background: rgba(0,0,0,0.3); }
+#anform { display: grid; grid-template-columns: max-content 1fr; gap: 6px 12px; align-items: center; }
+#anform > label { color: var(--text-secondary); }
+#anform .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; color: var(--text-secondary); }
+#anform input[type=text] { flex: 1; min-width: 90px; }
+#anbtns { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+#anbtns .end { margin-left: auto; }
+#anchart { width: 100%; height: 280px; display: block; }
+#anread { min-height: 18px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+#anout { margin: 8px 0 0; padding: 8px; max-height: 240px; overflow: auto; background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: 6px; font: 12px/1.35 ui-monospace, Menlo, Consolas, monospace; white-space: pre; }
 </style>
 </head>
 <body>
@@ -201,6 +214,7 @@ summary { transition: background 0.4s; }
   <button id="schtoggle" class="on" title="Show or hide the schematic">Schematic</button>
   <button id="edit" title="Edit the netlist source">Netlist</button>
   <button id="export" title="Download the netlist with the current settings">Export netlist</button>
+  <button id="analysis" title="Noise figure, VSWR and receiver budget for the current settings">Analysis</button>
   <span id="status"></span>
 </header>
 <main id="main">
@@ -238,6 +252,26 @@ summary { transition: background 0.4s; }
   </div>
 </main>
 <div id="tip"></div>
+<dialog id="andlg" aria-label="Noise figure, VSWR and receiver budget">
+  <div id="anform">
+    <label>Source, tone</label><div class="row"><select id="ansrc"></select><select id="antone"></select></div>
+    <label>Output port</label><div class="row"><select id="anport"></select></div>
+    <label>Band</label><div class="row"><input type="text" id="anband" placeholder="output band, e.g. 10.6MHz:10.8MHz (noise figure; empty: spot figure)"></div>
+    <label>Budget</label><div class="row"><input type="text" id="anbw" placeholder="channel, e.g. 200kHz (empty: per Hz)"><input type="text" id="anoff" placeholder="blocker offset, e.g. 1MHz (empty: in-band)"></div>
+    <label>Look into</label><div class="row"><select id="anlook"></select><input type="text" id="anrange" placeholder="VSWR sweep, e.g. 88MHz:108MHz"></div>
+    <label>Vary</label><div class="row"><select id="anvary"></select> from <input type="text" id="anfrom" size="6"> to <input type="text" id="anto" size="6"> points <input type="number" id="anpts" value="11" min="2" max="101" style="width:64px"></div>
+    <label>Tolerances</label><div class="row"><span id="antols"></span> runs <input type="number" id="anruns" value="200" min="2" style="width:80px"><input type="text" id="anspecs" placeholder="limits for the yield, e.g. nf_db&lt;=4, sfdr_db&gt;=80"></div>
+  </div>
+  <div id="anbtns">
+    <button data-k="noise">Noise figure</button><button data-k="wires">VSWR at every wire</button><button data-k="match">VSWR sweep</button>
+    <button data-k="budget">Receiver budget</button><button data-k="vary">Vary parameter</button><button data-k="tolerance">Monte Carlo</button>
+    <select id="anpick" title="Which chart to show"></select>
+    <button id="anclose" class="end">Close</button>
+  </div>
+  <canvas id="anchart" role="img" aria-label="analysis chart; the same figures are in the table below"></canvas>
+  <div id="anread"></div>
+  <pre id="anout"></pre>
+</dialog>
 <script>
 "use strict";
 // ------------------------------------------------------------------ helpers
@@ -1117,7 +1151,7 @@ function symbol(b) {
   const boxed = { l: 10, r: 10, t: 4 };
   switch (b.type) {
     case "amplifier": return { inset: { l: 14, r: 12, t: 0 }, svg: `<path class="blk-body" d="M14 6 L52 24 L14 42 Z"/>` };
-    case "mixer": return { inset: { l: 15, r: 15, t: 7 }, svg: `<circle class="blk-body" cx="32" cy="24" r="17"/><path class="sym" d="M20 12 L44 36 M44 12 L20 36"/>` };
+    case "mixer": case "iq_mixer": return { inset: { l: 15, r: 15, t: 7 }, svg: `<circle class="blk-body" cx="32" cy="24" r="17"/><path class="sym" d="M20 12 L44 36 M44 12 L20 36"/>` };
     case "source": return { inset: { l: 10, r: 22, t: 8 }, svg: `<circle class="blk-body" cx="26" cy="24" r="16"/><path class="sym" d="M16 24 q5 -10 10 0 t10 0"/>` };
     case "filter": case "ideal_filter": {
       const r = b.type === "ideal_filter" ? "bandpass" : paramOf(b.name, "response") || "bandpass";
@@ -1143,7 +1177,7 @@ function summary(b) {
   switch (b.type) {
     case "amplifier": return v("gain_db") === null ? "" : n(v("gain_db")) + " dB";
     case "attenuator": return v("loss_db") === null ? "" : n(v("loss_db")) + " dB";
-    case "mixer": return v("conversion_loss_db") === null ? "" : "CL " + n(v("conversion_loss_db")) + " dB";
+    case "mixer": case "iq_mixer": return v("conversion_loss_db") === null ? "" : "CL " + n(v("conversion_loss_db")) + " dB";
     case "ideal_filter": return v("fmin") !== null && v("fmax") !== null ? range(v("fmin"), v("fmax"))
       : [v("fmin"), v("fmax")].map((x) => x === null ? "…" : f(x)).join(" – ");
     case "filter": {
@@ -1837,6 +1871,174 @@ function carrySliders(prev, ren) {
   }
 }
 
+// ------------------------------------------------------------------ analysis: noise, VSWR, budget
+const AN = { opts: null, charts: [], hover: null, geom: null };
+const num = (v) => String(parseFloat(v.toPrecision(5)));
+
+async function anPost(body) {
+  const r = await fetch("api/analysis", { method: "POST", body: JSON.stringify(body) });
+  return r.json();
+}
+
+function fillSelect(el, items) {
+  el.textContent = "";
+  for (const t of items) { const o = document.createElement("option"); o.textContent = t; el.appendChild(o); }
+}
+
+async function anOpen() {
+  const o = await anPost({ kind: "options" });
+  if (o.error) { showMsgs([["err", o.error]]); return; }
+  AN.opts = o;
+  fillSelect($("ansrc"), Object.keys(o.sources));
+  anTones();
+  fillSelect($("anport"), o.outputs);
+  $("anport").selectedIndex = o.outputs.length - 1;
+  fillSelect($("anlook"), o.ports);
+  fillSelect($("anvary"), o.vary.map((v) => v.path));
+  anVaryRange();
+  $("antols").textContent = `${Object.keys(o.tolerances).length} in the netlist;`;
+  $("andlg").showModal();
+  anShow();
+}
+
+function anTones() { fillSelect($("antone"), AN.opts.sources[$("ansrc").value] || []); }
+
+function anVaryRange() {
+  const v = AN.opts.vary[$("anvary").selectedIndex];
+  if (v) { $("anfrom").value = num(v.min); $("anto").value = num(v.max); }
+}
+
+async function anRun(kind) {
+  const q = { kind, params: collect(), source: $("ansrc").value, tone: $("antone").value };
+  if (kind === "noise") Object.assign(q, { port: $("anport").value, band: $("anband").value });
+  if (kind === "match") Object.assign(q, { port: $("anlook").value, range: $("anrange").value });
+  if (kind === "budget" || kind === "vary" || kind === "tolerance") Object.assign(q, { port: $("anport").value, bw: $("anbw").value.trim(), offset: $("anoff").value.trim() });
+  if (kind === "vary") Object.assign(q, { param: $("anvary").value, from: $("anfrom").value, to: $("anto").value, points: +$("anpts").value });
+  if (kind === "tolerance") Object.assign(q, { runs: +$("anruns").value, specs: $("anspecs").value.split(",").map((s) => s.trim()).filter(Boolean) });
+  $("anout").textContent = "working…";
+  let d;
+  try { d = await anPost(q); } catch (e) { d = { error: "viewer server not reachable: " + e }; }
+  $("anout").textContent = d.error || d.text;
+  const keep = $("anpick").value;
+  AN.charts = d.error ? [] : d.charts;
+  fillSelect($("anpick"), AN.charts.map((c) => c.title));
+  if (AN.charts.some((c) => c.title === keep)) $("anpick").value = keep;
+  anShow();
+}
+
+function anShow() {
+  AN.hover = null;
+  $("anpick").style.display = AN.charts.length > 1 ? "" : "none";
+  $("anread").textContent = "";
+  anDraw();
+}
+
+function anDraw() {
+  const cv = $("anchart");
+  const [ctx, w, h] = setupCanvas(cv);
+  AN.geom = null;
+  ctx.font = "11px system-ui, sans-serif";
+  const c = AN.charts[$("anpick").selectedIndex];
+  const ys = c ? c.series.flatMap((s) => s.y.filter((y) => y !== null)) : [];
+  if (!ys.length) {
+    ctx.fillStyle = css("--text-muted");
+    ctx.textAlign = "center";
+    ctx.fillText(c ? "No values to chart" : "Noise figure with a band, a VSWR sweep or a varied parameter draws a chart", w / 2, h / 2);
+    return;
+  }
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const pad = Math.max((y1 - y0) * 0.08, y1 - y0 < 1 ? 0.5 : 0);
+  y0 -= pad; y1 += pad;
+  const x0 = Math.min(...c.x), x1 = Math.max(...c.x) > x0 ? Math.max(...c.x) : x0 + 1;
+  const pl = 58, pr = 16, pt = 34, pb = 36, pw = w - pl - pr, ph = h - pt - pb;
+  const X = (v) => pl + (v - x0) / (x1 - x0) * pw, Y = (v) => pt + (y1 - v) / (y1 - y0) * ph;
+  AN.geom = { X, c };
+  const colours = [css("--series-1"), css("--series-2")];
+  ctx.textAlign = "left";
+  ctx.fillStyle = css("--text-primary");
+  ctx.fillText(c.title, pl, 12);
+  if (c.series.length > 1) {   // identity is never colour alone: names beside their marks
+    let lx = pl;
+    c.series.forEach((s, i) => {
+      ctx.strokeStyle = colours[i]; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(lx, 25); ctx.lineTo(lx + 16, 25); ctx.stroke();
+      ctx.fillStyle = css("--text-secondary");
+      ctx.fillText(s.name, lx + 20, 29);
+      lx += 30 + ctx.measureText(s.name).width;
+    });
+  }
+  ctx.lineWidth = 1;
+  let step = niceStep(y1 - y0, ph / 30);
+  ctx.textAlign = "right";
+  for (let v = Math.ceil(y0 / step) * step; v <= y1 + 1e-12; v += step) {
+    ctx.strokeStyle = css("--grid");
+    ctx.beginPath(); ctx.moveTo(pl, Y(v)); ctx.lineTo(w - pr, Y(v)); ctx.stroke();
+    ctx.fillStyle = css("--text-muted");
+    ctx.fillText(num(v), pl - 6, Y(v) + 4);
+  }
+  const hz = c.x_unit === "Hz";
+  const [us, uu] = hz ? unitFor(x1) : [1, ""];
+  step = niceStep(x1 - x0, pw / 90);
+  ctx.textAlign = "center";
+  for (let v = Math.ceil(x0 / step) * step; v <= x1 + 1e-9 * Math.max(Math.abs(x1), 1); v += step) {
+    ctx.fillStyle = css("--text-muted");
+    ctx.fillText(num(v / us), X(v), h - pb + 14);
+  }
+  ctx.fillStyle = css("--text-secondary");
+  ctx.fillText(uu ? `${c.x_label} (${uu})` : c.x_label, pl + pw / 2, h - 6);
+  ctx.save();
+  ctx.translate(14, pt + ph / 2); ctx.rotate(-Math.PI / 2);
+  ctx.fillText(c.y_label, 0, 0);
+  ctx.restore();
+  c.series.forEach((s, i) => {
+    ctx.strokeStyle = colours[i]; ctx.lineWidth = 2;
+    ctx.beginPath();
+    let up = true;
+    s.y.forEach((y, k) => {
+      if (y === null) { up = true; return; }
+      if (up) ctx.moveTo(X(c.x[k]), Y(y)); else ctx.lineTo(X(c.x[k]), Y(y));
+      up = false;
+    });
+    ctx.stroke();
+    if (c.x.length <= 41) {
+      s.y.forEach((y, k) => {
+        if (y === null) return;
+        ctx.beginPath(); ctx.arc(X(c.x[k]), Y(y), 4, 0, 2 * Math.PI);
+        ctx.fillStyle = colours[i]; ctx.fill();
+        ctx.strokeStyle = css("--surface-1"); ctx.lineWidth = 2; ctx.stroke();
+      });
+      ctx.lineWidth = 2;
+    }
+  });
+  if (AN.hover !== null) {
+    ctx.strokeStyle = css("--text-muted"); ctx.lineWidth = 1;
+    const hx = X(c.x[AN.hover]);
+    ctx.beginPath(); ctx.moveTo(hx, pt); ctx.lineTo(hx, pt + ph); ctx.stroke();
+  }
+}
+
+function hookAnalysis() {
+  $("analysis").addEventListener("click", anOpen);
+  $("anclose").addEventListener("click", () => $("andlg").close());
+  $("ansrc").addEventListener("change", anTones);
+  $("anvary").addEventListener("change", anVaryRange);
+  $("anpick").addEventListener("change", anShow);
+  document.querySelectorAll("#anbtns button[data-k]").forEach((b) => b.addEventListener("click", () => anRun(b.dataset.k)));
+  const cv = $("anchart");
+  cv.addEventListener("mousemove", (e) => {
+    if (!AN.geom) return;
+    const { X, c } = AN.geom, mx = e.offsetX;
+    let best = 0;
+    c.x.forEach((x, k) => { if (Math.abs(X(x) - mx) < Math.abs(X(c.x[best]) - mx)) best = k; });
+    AN.hover = best;
+    const head = c.x_unit === "Hz" ? fmtF(c.x[best], 9) : `${c.x_label} ${num(c.x[best])}`;
+    $("anread").textContent = head + " · " + c.series.map((s) =>
+      `${s.name}: ${s.y[best] === null ? "-" : s.y[best].toFixed(2)}${c.y_unit.startsWith(":") ? "" : " "}${c.y_unit}`).join(" · ");
+    anDraw();
+  });
+  cv.addEventListener("mouseleave", () => { AN.hover = null; $("anread").textContent = ""; anDraw(); });
+}
+
 async function init() {
   const r = await fetch("api/model");
   const m = await r.json();
@@ -1846,6 +2048,7 @@ async function init() {
   hookPlot();
   hookEditor();
   hookSch();
+  hookAnalysis();
   loadModel(m);
 }
 init();

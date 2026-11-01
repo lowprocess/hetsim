@@ -10,9 +10,11 @@
 | `hetsim/td/` | The time-domain solver and its block models |
 | `hetsim/analysis.py` | Response search, band sweeps, phase noise |
 | `hetsim/smallsignal.py` | Noise figure and port match |
+| `hetsim/budget.py` | The receiver budget and parameter sweeps, built on the small-signal trace |
+| `hetsim/tolerance.py` | Monte Carlo of the budget |
 | `hetsim/netlist.py` | YAML and JSON netlists |
 | `hetsim/cli.py` | The command line |
-| `hetsim/viewer/`, `hetsim/desktop/` | The browser viewer and desktop app, sharing `viewer/model.py` |
+| `hetsim/viewer/`, `hetsim/desktop/` | The browser viewer and desktop app, sharing `viewer/model.py` and `viewer/analysis.py` |
 
 ## Tone solver
 
