@@ -84,7 +84,7 @@ def _run(model, req: dict) -> dict:
         x = sw.freqs.tolist()
         return {"text": sw.table(), "charts": [
             _chart("vswr", f"VSWR looking into {sw.port}", x, "Frequency", "Hz", ":1",
-                   [("Typical", sw.vswr), ("Worst case", sw.vswr_worst)], "VSWR"),
+                   [("Phased", sw.vswr_phased), ("Worst case", sw.vswr_worst)], "VSWR"),
             _chart("rl", f"Return loss looking into {sw.port}", x, "Frequency", "Hz", "dB",
                    [("Return loss", sw.return_loss_db)])]}
     kw = dict(source=source, tone=tone, port=port, bw=req.get("bw") or None, offset=req.get("offset") or None,

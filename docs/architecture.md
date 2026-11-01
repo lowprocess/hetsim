@@ -7,6 +7,7 @@
 | `hetsim/spectrum.py` | Tones and their mixing vectors; `Spectrum` |
 | `hetsim/blocks/` | The block types, and what each does to incident waves |
 | `hetsim/circuit.py` | The block graph and the tone solver |
+| `hetsim/coherent.py` | The coherent tone solver, with its direct network solve |
 | `hetsim/td/` | The time-domain solver and its block models |
 | `hetsim/analysis.py` | Response search, band sweeps, phase noise |
 | `hetsim/smallsignal.py` | Noise figure and port match |
@@ -28,14 +29,31 @@ The same product reached by two paths merges by power sum, while different produ
 frequency stay separate and labelled.
 
 A port with a `vswr` also sends part of its incident wave straight back. The solver adds this for
-every block, so `respond` doesn't deal with it.
+every block, so `respond` doesn't deal with it. A block can compute that reflection itself by overriding
+`reflection` and `gamma_c`, as `Filter` does for `vswr: reactive`: it finds F(s) in S11 = F/E from
+|F|² = |E|² − |P|² on the normalised lowpass prototype, then maps frequency to that prototype. The polynomial
+is an exact square for every family but Bessel, so it takes a square root rather than finding roots, which
+would scatter the double roots on the axis.
+
+## Coherent tone solver
+
+The same tones, with a phase each, so the same product by two paths interferes. It runs when a block
+sets `needs_coherent`, as `line` does, or under `Settings.coherent`. Reflections would make plain
+iteration crawl, so the linear network is solved directly, one matrix per tone:
+
+    b = A(f) b + s(f)
+
+`A` comes from `Block.linear_c`, the block's same-frequency complex gains, and from `gamma_c`. The sources
+`s` come from `Block.generate`: source tones and products. Only `generate` and each block's operating
+point go round the outer loop.
 
 ## Time-domain solver
 
 The same iteration, on sampled waveforms. Tones sit exactly on FFT bins, so the steady state is
 periodic: linear blocks multiply the spectrum by their complex response, and nonlinear blocks act
 sample by sample. Waveforms add in amplitude and phase, so same-bin products interfere, which the
-tone solver can't show. Block models are in `td/models.py`.
+power solver can't show. Block models are in `td/models.py`. With reflections present, the linear network
+is solved per FFT bin, as above, and only what blocks add beyond their linear paths goes round.
 
 ## Small-signal analyses
 
@@ -56,3 +74,6 @@ loops are exact and the result gives the gain from every point in the circuit to
 3. Implement `respond` (a `TwoPort` only needs `s21_db`).
 4. Add a model with `@td_model` in `td/models.py` for time-domain support.
 5. Implement `transfers` for noise and match to see through it, and `noise_target` if it's active.
+6. For the coherent solver, implement `linear_c` for its same-frequency paths and `generate` for
+   what it creates. Set `td_linear` if `linear_c` is all it does. `conversions_c` lets phased match see
+   through a frequency change.

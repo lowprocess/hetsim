@@ -327,8 +327,8 @@ def _match(a, circuit, st):
     if a.range:
         sw = match_sweep(circuit, a.port, np.linspace(*a.range, a.points), st)
         if a.json:
-            json.dump([{"freq": float(f), "vswr": float(v), "vswr_worst": float(w), "return_loss_db": float(r)}
-                       for f, v, w, r in zip(sw.freqs, sw.vswr, sw.vswr_worst, sw.return_loss_db)], sys.stdout, indent=1)
+            json.dump([{"freq": float(f), "vswr": float(v), "vswr_worst": float(w), "return_loss_db": float(r), "vswr_phased": float(c)}
+                       for f, v, w, r, c in zip(sw.freqs, sw.vswr, sw.vswr_worst, sw.return_loss_db, sw.vswr_phased)], sys.stdout, indent=1)
             print()
         else:
             print(sw.table())
@@ -339,11 +339,12 @@ def _match(a, circuit, st):
     m = port_match(circuit, a.port, a.freq, st)
     if a.json:
         json.dump({"port": m.port, "freq": m.freq, "vswr": m.vswr, "vswr_worst": m.vswr_worst,
-                   "return_loss_db": m.return_loss_db, "mismatch_loss_db": m.mismatch_loss_db}, sys.stdout, indent=1)
+                   "return_loss_db": m.return_loss_db, "mismatch_loss_db": m.mismatch_loss_db, "vswr_phased": m.vswr_phased}, sys.stdout, indent=1)
         print()
     else:
         print(f"looking into {m.port} at {parse_freq(a.freq):g} Hz: VSWR {m.vswr:.3f}:1, return loss "
-              f"{m.return_loss_db:.2f} dB, mismatch loss {m.mismatch_loss_db:.3f} dB, worst case VSWR {m.vswr_worst:.3f}:1")
+              f"{m.return_loss_db:.2f} dB, mismatch loss {m.mismatch_loss_db:.3f} dB, worst case VSWR {m.vswr_worst:.3f}:1, "
+              f"phased VSWR {m.vswr_phased:.3f}:1")
     return 0
 
 

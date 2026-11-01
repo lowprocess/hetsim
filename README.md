@@ -28,15 +28,29 @@ print(r["iff.out"].table(ref="LO - RF", sort="power"))   # wave leaving the IF f
 print(r.incident("ant.out").table())                      # LO radiated from the antenna
 ```
 
+## What it does
+
+| | |
+|---|---|
+| **Solvers** | Tone solver (power), coherent tone solver (phase), and time-domain FFT solver for the exact periodic steady state |
+| **Blocks** | Sources, mixers, I/Q mixers, amplifiers, filters (analytic, ideal, Touchstone), lines, ADCs, pads, splitters, loads, and detector and X/Y display blocks |
+| **Reflections** | Per-port `vswr`, measured S11 and S22, lines with real delay, and filters that reflect what they reject |
+| **Sweeps and spurs** | Tuned, swept and wideband sources, every spurious response into a band, phase noise and reciprocal mixing |
+| **Receiver analysis** | Noise figure, port match, stage-by-stage budget (IIP3, IP1dB, IIP2, SFDR, blocking), comparing architectures, Monte Carlo yield |
+| **Interfaces** | Python, YAML or JSON netlists, the `hetsim` command line, a desktop app and a browser viewer |
+
+[ROADMAP.md](ROADMAP.md) lists what isn't modelled yet and what comes next. [docs/](docs/README.md) has the short route in.
+
 ## Model
 
 **Tones carry their mixing vector.** Each source tone is a symbol (`RF`, `LO1`...).
 Every product is an integer combination of symbols, and its frequency follows from
 that. Products landing on the same frequency stay separate and labelled. The same
-product reached by two paths merges by power sum.
+product reached by two paths merges by power sum, or with its phase in the coherent
+solver (see Phase and electrical length).
 
 **Waves in both directions.** Each wire carries a forward and a reverse wave, and
-blocks map incident waves to outgoing waves at all their ports. The solver iterates
+blocks map incident waves to outgoing waves at all their ports. The tone solver iterates
 to a fixed point. This is how LO leakage travels back through the LNA to the
 antenna, and how a second LO's leakage comes back through the first IF. A port's
 `vswr` is one more such term: part of what arrives comes straight back (see VSWR).
@@ -48,7 +62,8 @@ antenna, and how a second LO's leakage comes back through the first IF. A port's
 | `source` | CW tones, optional harmonics (`harmonics_dbc`); an antenna, a generator or an LO |
 | `mixer` | ports `rf`, `lo`, `if`. Ideal multiplier by default (LO ± RF, nothing else). Optional: conversion loss, LO→RF, LO→IF, RF→IF and RF→LO isolation, IIP3, IIP2, m×n spur table, nominal LO drive (warns if off), `max_order` (depth: only m×n spurs with m + n ≤ it; 2 = the 1×1 product only). Reciprocal, so it also up-converts. |
 | `amplifier` | gain, OIP3/IIP3, OIP2/IIP2 (two-tone IM, HD2, HD3), output P1dB (Rapp compression from total power), reverse isolation, noise figure (`nf_db`) |
-| `filter` | Butterworth, Chebyshev I/II, elliptic or Bessel LP/HP/BP/BS. Insertion loss and a finite ultimate rejection (`max_rejection_db`, e.g. ~80 dB for a crystal filter) |
+| `filter` | Butterworth, Chebyshev I/II, elliptic or Bessel LP/HP/BP/BS. Insertion loss and a finite ultimate rejection (`max_rejection_db`, e.g. ~80 dB for a crystal filter). `vswr: reactive` reflects what it rejects (see Reactive filters) |
+| `line` | Delay and flat loss: `delay_ns`, or `length_m` with `velocity_factor`. Uses the coherent solver (see Phase and electrical length) |
 | `iq_mixer` | ports `rf`, `lo`, `if`. A quadrature pair and its 90° combination as one block: an image-reject mixer, or the analogue half of a low-IF or zero-IF receiver. Everything a `mixer` has, plus `sideband`, `gain_imbalance_db`, `phase_imbalance_deg` |
 | `adc` | `sample_rate`, `bits`, `full_scale_dbm`, optional `snr_db`, `hd2_dbc`, `hd3_dbc`, `analog_bw`. Aliases carry the sampling frequency's symbol, e.g. `RF - adc_FS` |
 | `sparam` | Touchstone `.s2p` (\|S21\|, \|S12\|; `vswr: file` adds S11 and S22), e.g. a filter out of openEMS, mom25d or Qucs |
@@ -142,20 +157,24 @@ ant:  {type: source, vswr: 2.0, tones: [{name: RF, freq: 100MHz, power: -80}]}
 
 A block's gain and loss stay as you gave them, as S21 measured in 50 Ω, so a mismatch
 against a matched neighbour costs nothing extra. It only sends power back. A filter's
-stopband does not reflect by itself: it stays absorptive unless you give it a table.
+stopband does not reflect by itself: it stays absorptive unless you give it a table, or
+`vswr: reactive`. See Reactive filters.
 
-Wires have no length, so the solvers can't know the phase of a bounce:
+What a bounce does depends on its phase, so it depends on the solver:
 
 - **Tone solver:** bounces add in power, which gives the average of the ripple.
-- **Time-domain solver:** bounces add in amplitude at zero phase, so it shows the top
-  of the ripple. `sparam` with `vswr: file` uses the file's real phase.
+- **Coherent tone solver:** bounces add with their phase. It runs when the circuit has a `line`, or
+  with `settings: {coherent: true}`. See Phase and electrical length.
+- **Time-domain solver:** always coherent. A plain wire has zero length, so without a `line` it shows
+  the top of the ripple. `sparam` with `vswr: file` uses the file's real phase.
 
 `hetsim match` reports what each port sees, including everything behind it. A pad
 improves the return loss by twice its loss, an amplifier by its gain less its reverse
 isolation, and a mixer passes its far side's match through by conversion, both
-sidebands. Each figure comes in two forms: typical, with reflections added in power,
-and worst case, with them added in amplitude. The ripple is ±20·log(1 ± Γa·Γb)
-between the two ends of a wire.
+sidebands. Each figure comes in three forms: typical, with reflections added in power; worst
+case, with them added in amplitude; and phased, with the delays of lines and the phases of
+filters and measured S-parameters, which shows the true standing wave. The ripple is
+±20·log(1 ± Γa·Γb) between the two ends of a wire.
 
 ```
 $ python -m hetsim match examples/vhf_noise_match.yaml --tone RF
@@ -167,6 +186,75 @@ $ python -m hetsim match examples/vhf_noise_match.yaml --port lna.in --range 88M
 ```
 
 `port_match()`, `match_sweep()` and `mismatch_report()` are the same from Python.
+
+## Reactive filters
+
+A real LC filter doesn't absorb what it rejects: it sends it back. `vswr: reactive` on a `filter` works that
+reflection out from the filter's own response, phase included, for both ports:
+
+```yaml
+iff: {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, vswr: reactive}
+```
+
+```
+python -m hetsim match examples/vhf_reactive.yaml --port iff.in --range 10.2MHz:11.2MHz --points 21
+```
+
+- **Where the numbers come from.** A lossless filter has |S11|² = 1 − |S21|². The phase comes from its
+  polynomials, worked out on the normalised prototype and mapped to the real frequency, so a narrow filter
+  costs nothing in accuracy. For Butterworth and Chebyshev the result matches an LC ladder built from the
+  textbook element values, including S22 and the phase. An order it can't work out to 1 part in a million
+  (above about 12 for elliptic and 16 for the others) is an error rather than a wrong answer.
+- **What it assumes.** The phase is that of a ladder starting with a series element, which is open far out of
+  band. A shunt-first ladder has the same magnitude and the opposite sign, which moves the ripple along a cable.
+  Bessel filters take the minimum-phase choice. If the real part matters, measure it and use `sparam` with `vswr: file`.
+- **Loss.** `insertion_loss_db` comes off the wave passing through, not the reflection. Return loss stops at
+  0.1 dB, since a real stopband always dissipates a little and facing ideal stopbands have no steady state.
+- **Solver.** It uses the coherent solver, as a `line` does. `ideal_filter` doesn't take it: a brick wall
+  has no phase to derive.
+
+**A mixer with reactive filters on both ports doesn't settle.** Every conversion path adds in phase on the
+tone solvers and in the time domain alike, so a pass through the mixer has amplitude gain of about 1 summed over
+its sidebands, and only the filters' own small loss is left to stop it. The solvers stop and say so, and the
+figures are not usable. The usual bench fix works here as well: on the VHF receiver a 6 dB pad on either
+side settled it and 3 dB did not. Or leave one of the two filters absorptive, as `examples/vhf_reactive.yaml` does.
+
+## Phase and electrical length
+
+A `line` block is a length of line: `delay_ns`, or `length_m` with `velocity_factor`, plus `loss_db`.
+It makes the circuit use the coherent tone solver, where tones keep their phase and the same product
+by two paths interferes. `settings: {coherent: false}` turns that off, and `coherent: true` turns
+it on without a line.
+
+```
+python -m hetsim match examples/vhf_cable.yaml --port coax.in --range 88MHz:108MHz --points 41
+```
+
+**Why strong reflections cost nothing.** Iterating around a loop gets slower as reflections near
+total, so both solvers now solve the linear network directly, one matrix per tone or FFT bin. Facing
+ports at VSWR 1000 settle in 2 rounds and match the closed form exactly. Only nonlinear parts go round
+the outer loop: what sources and mixers create, and what an amplifier adds beyond its linear gain. Plain
+iteration remains for circuits without reflections, so their results don't change.
+
+**What's coherent:**
+
+- Reflections, parallel paths, IM from different stages (which then matches the budget's in-phase
+  cascade), and conversion, including lower sidebands reversing phase. Levels match the time-domain
+  solver on these.
+- Different products on one frequency stay separate and aren't summed in the tone solver. The time-domain
+  solver adds those too, so use it for image against wanted in one bin.
+- Unspecified source phases are the same fixed pseudo-random values in both solvers.
+
+The power solver prunes each port at the floor as it goes. The coherent solver applies the floor to
+final levels, so it keeps products that are below the floor mid-chain and then amplified, and it may
+list more tones.
+
+**Costs.** A coherent solve took 1–3× a power solve on the receiver examples. In the time-domain solver,
+reflections cost about 50–100 ms on the same examples, but phase noise filling the band makes them
+expensive: 24 s against 0.44 s without reflections, on a 1.25M-point record. Noise figure stays
+power-based, so correlated noise across reflections is approximate, and `port_match` is what shows the
+standing wave. A band sweep has to step finer than the ripple, whose period is 1 / (2 × delay): about
+10 MHz for 10 m of coax.
 
 ## Noise figure
 
@@ -236,8 +324,8 @@ $ python -m hetsim budget a.yaml b.yaml --bw 200kHz --offset 1MHz     # side by 
   `--bw`, centred on the product, so the two differ slightly when a filter has ripple.
 - **Gain and NF** come from the noise trace, so filter shapes, image noise, mismatches and
   compression are all in them.
-- **IIP3** uses the standard in-phase cascade, not the tone solver's power sum, and matches a
-  time-domain two-tone run. With `--offset` the two tones sit at f + offset and f + 2·offset, and
+- **IIP3** uses the standard in-phase cascade, not the power solver's sum, and matches a
+  time-domain two-tone run and the coherent tone solver. With `--offset` the two tones sit at f + offset and f + 2·offset, and
   each stage is referred with the gain they have up to it, so a roofing filter takes the stages
   behind it out of the sum.
 - **Input P1dB** is the first stage to compress, OP1dB + 1 less the gain to its output. Only an
@@ -318,8 +406,8 @@ you give one. Noise at the image is cancelled the same way, so there's no 3 dB p
 
 - The tone solver uses this closed form per product. The time-domain solver runs real I and Q branches.
   The two agree on wanted and image levels, third-harmonic responses and IM2.
-- It is one block, not separate I and Q ports, because the tone solver only tracks power: it couldn't
-  show two wires cancelling, and noise on two wires would add. Filters inside the I and Q branches
+- It is one block, not separate I and Q ports, because the power solver and the noise analysis can't
+  show two wires cancelling: noise on two wires would add. Filters inside the I and Q branches
   can't be modelled, and only one `adc` is drawn for a complex baseband.
 - Set `iip2_dbm` for direct conversion: IM2 lands in the channel, and the budget reports IIP2 at the
   mixers. DC offset and flicker noise aren't modelled, and a product exactly at DC is dropped, so
@@ -351,8 +439,9 @@ x = r.waveform("iff.out")                    # volts into 50 ohms, period 1/reso
 frequency. The bin spacing defaults to the GCD of all source frequencies, so every
 tone sits on a bin: no window, no leakage, and bin power is tone power.
 Filters multiply each bin by their complex response, including phase. Amplifiers
-and mixers act sample by sample. The same two-way wave iteration links the
-blocks, so the result is the exact periodic steady state.
+and mixers act sample by sample. Two-way waves link the blocks: by iteration in a chain
+with no reflections, and with the linear network solved directly per bin when a port
+reflects. Either way the result is the exact periodic steady state.
 
 **Sampling plan.** The tone solver runs first and finds how high the significant
 products reach (within `alias_db`, default 120 dB, of the strongest). The sample
@@ -600,42 +689,40 @@ search.
 
 ## Examples
 
-- `examples/vhf_single_conversion.yaml` plus `vhf_example.py`: wanted signal,
-  image-frequency signal and the IM3 of two blockers all landing on 10.7 MHz. The
-  script also compares spurious responses with and without the preselector.
-- `examples/td_vs_tone.py`: a two-tone LNA test swept into compression with both
-  solvers, plus the VHF IF spectrum from the TD solver overlaid on the tone result.
-- `examples/hf_single_vs_dual.py`: an HF receiver taken straight to 455 kHz, with
-  0 dB image rejection, against up-conversion to 45 MHz with a roofing filter and a
-  second conversion to 455 kHz, with about 80 dB rejection.
+Each netlist's header lists the commands to run on it.
+
+| Example | What it shows |
+|---|---|
+| `vhf_single_conversion.yaml`, `vhf_example.py` | Wanted, image and two blockers' IM3 all landing on 10.7 MHz; spurious responses with and without the preselector |
+| `hf_dual_conversion.yaml`, `hf_single_vs_dual.py` | An HF receiver taken straight to 455 kHz, with 0 dB image rejection, against up-conversion to 45 MHz and a second conversion, with about 80 dB |
+| `td_vs_tone.py` | A two-tone LNA test into compression in both solvers, and the VHF IF spectrum from each |
+| `vhf_noise_match.yaml` | Noise figure, `vswr` per port and against frequency, port match, and tolerances with yield |
+| `rx_superhet.yaml`, `rx_direct_conversion.yaml` | Two architectures compared in one budget table: `iq_mixer`, `adc` and anti-alias filters |
+| `vhf_cable.yaml` | A `line` between two mismatches, whose standing wave only the coherent solver shows |
+| `vhf_reactive.yaml` | Reactive filters ahead of the LNA and after the mixer |
+| `vhf_reactive_pad.yaml` | Reactive filters on both mixer ports, settled by a pad. Also shows the RF port's match improving at the one frequency that converts into the IF passband |
+| `reflections.py` | The cable's ripple and a reactive filter's return loss, plotted, and both solvers on each |
+| `spectrum_analyser.yaml`, `spectrum_analyser_highband.yaml` | Swept analysers with detector and X/Y display, for the desktop app: dual conversion, and a single-conversion high band |
+
+![Left: phased VSWR rippling between the in-phase limit and below the power-added average along 10 m of coax. Right: a reactive filter's return loss, with four reflection zeros in band and near 0 dB out of band.](examples/reflections.png)
 
 ## Limitations
 
-These are things that are not modelled yet, roughly in the order they would matter:
+The main ones, with the rest in [ROADMAP.md](ROADMAP.md):
 
-- **Wire lengths.** Reflections have magnitude but no electrical length, so VSWR gives
-  a typical value and bounds rather than a true standing-wave pattern. Only a `sparam`
-  with `vswr: file` has real reflection phase, and only the TD solver uses it.
-- **Reactive filter stopbands.** Filters absorb out of band unless given a `vswr`
-  table. A real one reflects, which changes what neighbouring ports see there.
-- **Noise sources.** LO wideband noise is not converted by the mixer in the noise
-  figure (phase noise has its own analysis, and isn't included in NF). Noise is T0
-  thermal plus `nf_db`, flat with frequency; the source is always at T0, and
-  neither solver draws noise on a spectrum.
-- **Phase and coherence.** In the tone solver, same-frequency products add in
-  power; the TD solver handles phase.
-- **LO model.** The strongest tone at the LO port is the LO. Other tones there only
-  leak (phase noise on the LO itself is modelled; see Phase noise).
-- **Two-tone nonlinearity.** It uses the strongest `im_max_tones` tones (default 24)
-  and does not include triple beats.
+- A mixer with reactive filters on both ports needs a pad (see Reactive filters).
+- A `line` is matched, and its loss is flat.
+- Noise figure adds noise in power, and neither tone solver draws noise on a spectrum.
+- The coherent tone solver doesn't sum different products on one frequency. The time-domain solver does.
 
 ## Tests
 
-`pytest tests` runs 252 checks. They compare against hand-calculated values:
+`pytest tests` runs 391 checks. They compare against hand-calculated values:
 mixer products, isolation, spur scaling, IM3/IM2 and harmonics, P1dB, filter
 edges and phase, reverse leakage, image rejection and netlist round trip. They
 also check that the TD and tone solvers agree, and that same-bin products add
-coherently in the TD solver. Viewer back-end tests cover parameter discovery,
-edits, frequency snapping and the HTTP API.
+coherently in the TD solver. Reactive filters are checked against LC ladders built from
+textbook element values, and every example netlist has to simulate and settle. Viewer
+back-end tests cover parameter discovery, edits, frequency snapping and the HTTP API.
 
 Licence: GPL-3.0-or-later.

@@ -12,7 +12,7 @@
 """
 from .analysis import (BandSweep, Response, ResponseTable, Skirt, Sweep, SweptProduct, band_sweep, find_responses,
                        phase_noise_skirts, response_sweep)
-from .blocks import (ADC, REGISTRY, SPUR_PRESETS, Amplifier, Attenuator, Block, Filter, IdealFilter, IQMixer, Load, Mixer,
+from .blocks import (ADC, REGISTRY, SPUR_PRESETS, Amplifier, Attenuator, Block, Filter, IdealFilter, IQMixer, Line, Load, Mixer,
                      Source, SParamFilter, Splitter, SpurTable, register)
 from .budget import Budget, BudgetSweep, Stage, budget_sweep, compare_budgets, receiver_budget
 from .circuit import Circuit, Result, Settings

@@ -32,6 +32,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from ..spectrum import Spectrum, vec_comb
 from ..units import parse_db
 from .base import Block, register
@@ -88,6 +90,10 @@ class Mixer(Block):
         an I/Q mixer's two branches add or cancel according to c."""
         return 0.0
 
+    def _side_phase(self, c: int) -> float:
+        """Phase the same combination adds, in radians."""
+        return 0.0
+
     def spur_entries(self) -> dict:
         """The spur table entries {(m, n): dBc} this mixer generates, after max_order."""
         return {mn: v for mn, v in self.table.entries.items()
@@ -104,9 +110,15 @@ class Mixer(Block):
     # ------------------------------------------------------------------
     def _convert(self, inp: Spectrum, lo, out: Spectrum, ctx) -> None:
         """Mix the tones of `inp` with the LO into `out` (spur table + IM)."""
-        vlo, flo = lo.vec, lo.freq
+        vlo, flo, plo = lo.vec, lo.freq, lo.phase
         floor = ctx.floor_dbm
         entries = list(self.spur_entries())
+
+        def put(v, f, lvl, c, phase, scale=None):
+            # the side gain belongs to the positive-frequency form; add() flips a negative one
+            s = self._side_phase(c)
+            out.add(v, f, lvl + self._side_db(c), scale=scale, phase=phase + s if f >= 0 else phase - s)
+
         for t in inp:
             p = t.power_dbm
             for m, n in entries:
@@ -114,20 +126,21 @@ class Mixer(Block):
                 if lvl is None or lvl < floor:
                     continue
                 if m == 0:  # RF harmonic straight through to the output
-                    out.add(vec_comb(t.vec, n, (), 0), n * t.freq, lvl + self._side_db(0))
+                    put(vec_comb(t.vec, n, (), 0), n * t.freq, lvl, 0, n * t.phase)
                     continue
-                out.add(vec_comb(vlo, m, t.vec, n), m * flo + n * t.freq, lvl + self._side_db(m))
+                put(vec_comb(vlo, m, t.vec, n), m * flo + n * t.freq, lvl, m, m * plo + n * t.phase)
                 diff = m * flo - n * t.freq
-                out.add(vec_comb(vlo, m, t.vec, -n), diff, lvl + self._side_db(m if diff > 0 else -m), scale=m * flo)
+                put(vec_comb(vlo, m, t.vec, -n), diff, lvl, m if diff > 0 else -m, m * plo - n * t.phase, scale=m * flo)
         if self.iip3 is not None:
             for t in nonlinear_products(inp, ctx, ip3=self.iip3, harmonics=False):
                 lvl = t.power_dbm - self.cl
                 if lvl >= floor:
-                    out.add(vec_comb(vlo, 1, t.vec, 1), flo + t.freq, lvl + self._side_db(1))
+                    put(vec_comb(vlo, 1, t.vec, 1), flo + t.freq, lvl, 1, plo + t.phase)
                     diff = flo - t.freq
-                    out.add(vec_comb(vlo, 1, t.vec, -1), diff, lvl + self._side_db(1 if diff > 0 else -1), scale=flo)
+                    put(vec_comb(vlo, 1, t.vec, -1), diff, lvl, 1 if diff > 0 else -1, plo - t.phase, scale=flo)
         if self.iip2 is not None:
-            out.add_spectrum(nonlinear_products(inp, ctx, ip2=self.iip2, harmonics=False), -self.cl + self._side_db(0))
+            out.add_spectrum(nonlinear_products(inp, ctx, ip2=self.iip2, harmonics=False), -self.cl + self._side_db(0),
+                             phase=self._side_phase(0))
 
     def respond(self, incident, ctx):
         rf, lo_in, if_in = incident["rf"], incident["lo"], incident["if"]
@@ -158,6 +171,45 @@ class Mixer(Block):
         self._convert(rf, lo, out_if, ctx)      # down-conversion (RF -> IF)
         self._convert(if_in, lo, out_rf, ctx)   # reciprocal path (IF -> RF)
         return {"rf": out_rf, "lo": out_lo, "if": out_if}
+
+    # -- coherent solver ----------------------------------------------------
+    def linear_c(self, port, f, op):
+        leak = {"if": (("lo", self.lo_if), ("rf", self.rf_if)),
+                "rf": (("lo", self.lo_rf), ("if", self.rf_if)),
+                "lo": (("if", self.lo_if), ("rf", self.rf_lo))}[port]
+        return [(q, np.full(np.shape(f), 10 ** (-iso / 20) + 0j)) for q, iso in leak if iso is not None]
+
+    def generate(self, incident, op, ctx):
+        los = incident["lo"].strongest(1)
+        out_rf, out_if = Spectrum(), Spectrum()
+        if not los:
+            if len(incident["rf"]) or len(incident["if"]):
+                ctx.warn("no LO drive at the LO port; only leakage is produced")
+            return {}
+        lo = los[0]
+        if self.lo_drive is not None and abs(lo.power_dbm - self.lo_drive) > self.lo_tol:
+            ctx.warn(f"LO drive {lo.power_dbm:.1f} dBm vs nominal {self.lo_drive:.1f} dBm; "
+                     f"conversion loss and spurs will differ from the datasheet")
+        self._convert(incident["rf"], lo, out_if, ctx)
+        self._convert(incident["if"], lo, out_rf, ctx)
+        return {"rf": out_rf, "if": out_if}
+
+    def conversions_c(self, port, f, flo):
+        if port == "lo" or flo is None:
+            return []
+        q = "rf" if port == "if" else "if"
+        out = []
+        for (m, n), dbc in self.spur_entries().items():
+            if n != 1 or m == 0:
+                continue
+            g = 10 ** (-(self.cl + dbc) / 20)
+            mf = m * flo
+            # f = fi - m*fLO keeps the input's phase; f = m*fLO + fi too; f = m*fLO - fi reverses it
+            for fi, c, conj in ((mf + f, -m, False), (f - mf, m, False), (mf - f, m, True)):
+                side = g * 10 ** (self._side_db(c) / 20) * np.exp(1j * self._side_phase(c))
+                if fi > 0 and abs(side) > 0:
+                    out.append((q, fi, complex(side), conj))
+        return out
 
     # -- small signal -------------------------------------------------------
     def linearity(self):
@@ -235,6 +287,13 @@ class IQMixer(Mixer):
         g = 10 ** (self.gain_imb / 20)
         p = abs(1 + g * complex(math.cos(theta), math.sin(theta))) ** 2 / 4
         return 10 * math.log10(p) if p > 1e-30 else -math.inf
+
+    def _side_phase(self, c: int) -> float:
+        hilbert = -90.0 if self.sideband == "upper" else 90.0
+        theta = math.radians(-c * 90.0 + hilbert + self.phase_imb)
+        g = 10 ** (self.gain_imb / 20)
+        z = 1 + g * complex(math.cos(theta), math.sin(theta))
+        return math.atan2(z.imag, z.real)
 
     def image_rejection_db(self) -> float:
         """Wanted sideband over the other, from the imbalances alone."""

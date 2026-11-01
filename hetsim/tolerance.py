@@ -66,7 +66,8 @@ def _worker(netlist: dict, kw: dict, draws: list) -> list:
         try:
             c, st = from_dict(d)
             b = receiver_budget(c, settings=st, **kw)
-            rows.append({k: float(getattr(b, k)) for k in METRICS})
+            unsettled = any(w.startswith("[<solver>]") for w in b.warnings)    # its figures mean nothing
+            rows.append(None if unsettled else {k: float(getattr(b, k)) for k in METRICS})
         except ValueError:
             rows.append(None)   # this draw leaves no path, or a loop with gain: it counts as a failure
     return rows

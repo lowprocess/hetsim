@@ -13,9 +13,8 @@ definition: noise from the input termination at the image and spur responses cou
 receiver, which is why an unfiltered image costs 3 dB.
 
 Match: the same trace ends where it started. A port's reflection is the gain back to itself
-with its wire cut. Wires have no length and reflections no phase here, so two figures come out:
-adding bounces in power gives the typical value (the tone solver's view), and adding them in
-amplitude the worst case, which some frequency will reach.
+with its wire cut. Adding bounces in power gives the typical value, adding them in amplitude the
+worst case, and adding them with the phases of lines and filters the actual complex reflection.
 
 Not included: LO wideband noise converted by the mixer (phase noise has analysis.phase_noise_skirts),
 and shot or flicker noise beyond what nf_db says.
@@ -395,6 +394,65 @@ def noise_sweep(circuit: Circuit, source: str, port, band=None, tone=0, settings
 
 
 # ---------------------------------------------------------------- port match
+def _phased_reflection(circuit: Circuit, nominal, ref, f: float, prune=1e-9, max_nodes=20000) -> complex:
+    """Complex reflection looking into `ref` at f, with its wire cut: every path back, with its phase.
+
+    As in _Trace, but gains are complex, and a lower-sideband conversion reverses phase. That isn't
+    linear in a complex wave, so a node remembers whether the gain it carries applies to the wave or
+    to its conjugate; two reversals in a round trip cancel.
+    """
+    arr = np.array([f])
+    ops = {n: b.operating_point({p: nominal.incident((n, p)) for p in b.ports}) for n, b in circuit.blocks.items()}
+    root = (ref, round(f, 3), False)
+    index = {root: 0}
+    nodes, heap, done = [(ref, f, False)], [(-1.0, 0)], set()
+    rows, cols, vals, terms = [], [], [], []
+    while heap and len(nodes) < max_nodes:
+        w, v = heapq.heappop(heap)
+        w = -w
+        if v in done or w < prune:
+            continue
+        done.add(v)
+        (name, port), fv, conj_v = nodes[v]
+        b = circuit.blocks[name]
+        at = np.array([fv])
+        paths = [(q, fv, complex(g[0]), False) for q, g in b.linear_c(port, at, ops[name])]
+        if port in b.gamma2:
+            paths.append((port, fv, complex(np.ravel(b.gamma_c(port, at))[0]), False))
+        paths += b.conversions_c(port, fv, ops[name])
+        for q, fi, g, conjugates in paths:
+            if g == 0:
+                continue
+            # X_v carries a gain on w_v, or on conj(w_v). Writing w_v = g*w_u, or g*conj(w_u), for the wave u:
+            coeff = g.conjugate() if conj_v else g
+            conj_u = conj_v != conjugates
+            inp = (name, q)
+            peer = circuit.wires.get(inp)
+            if peer is None or inp == ref:
+                terms.append((inp, fi, conj_u, v, coeff))
+                continue
+            key = (peer, round(fi, 3), conj_u)
+            u = index.get(key)
+            if u is None:
+                u = index[key] = len(nodes)
+                nodes.append((peer, fi, conj_u))
+            rows.append(u)
+            cols.append(v)
+            vals.append(coeff)
+            if u not in done:
+                heapq.heappush(heap, (-w * abs(g), u))
+    n = len(nodes)
+    e = np.zeros(n, complex)
+    e[0] = 1.0
+    if rows:
+        m = csc_matrix((vals, (rows, cols)), shape=(n, n), dtype=complex)
+        x = np.atleast_1d(spsolve((identity(n, format="csc", dtype=complex) - m).tocsc(), e))
+    else:
+        x = e
+    return complex(sum(x[v] * coeff for inp, fi, conj_u, v, coeff in terms
+                       if inp == ref and abs(fi - f) <= SAME_F_HZ and not conj_u))
+
+
 def _vswr(gamma: float) -> float:
     return (1 + gamma) / (1 - gamma) if gamma < 1 else math.inf
 
@@ -402,11 +460,18 @@ def _vswr(gamma: float) -> float:
 @dataclass
 class PortMatch:
     """Looking into a port with its wire cut. gamma is typical (bounces add in power), gamma_worst the
-    limit when they all add in phase."""
+    limit when they all add in phase, and gamma_c the actual complex reflection: the delays of lines and
+    the phases of filters and of measured S-parameters are in it. Without those it can't know better
+    than zero phase, and it then equals the worst case."""
     port: str
     freq: float
     gamma: float
     gamma_worst: float
+    gamma_c: complex = 0j
+
+    @property
+    def vswr_phased(self) -> float:
+        return _vswr(abs(self.gamma_c))
 
     @property
     def vswr(self) -> float:
@@ -438,7 +503,8 @@ def port_match(circuit: Circuit, port, freq, settings: Settings | None = None, n
         tr = _Trace(circuit, nominal, ref, f, amplitude=amplitude, cut=ref)
         x = sum(x for p, fi, x in tr.terms if p == ref and abs(fi - f) <= SAME_F_HZ)
         back.append(math.inf if tr.diverged else float(x))
-    return PortMatch(f"{ref[0]}.{ref[1]}", f, math.sqrt(back[0]), back[1])
+    phased = _phased_reflection(circuit, nominal, ref, f) if not math.isinf(back[1]) else complex(math.inf)
+    return PortMatch(f"{ref[0]}.{ref[1]}", f, math.sqrt(back[0]), back[1], phased)
 
 
 @dataclass
@@ -448,11 +514,13 @@ class MatchSweep:
     vswr: np.ndarray
     vswr_worst: np.ndarray
     return_loss_db: np.ndarray
+    vswr_phased: np.ndarray = None
 
     def table(self) -> str:
-        lines = [f"looking into {self.port}", f"{'frequency':>16}  {'VSWR':>7}  {'RL dB':>7}  {'worst VSWR':>10}"]
-        for f, v, rl, w in zip(self.freqs, self.vswr, self.return_loss_db, self.vswr_worst):
-            lines.append(f"{fmt_freq(f, 9):>16}  {v:7.3f}  {rl:7.2f}  {w:10.3f}")
+        lines = [f"looking into {self.port}",
+                 f"{'frequency':>16}  {'VSWR':>7}  {'RL dB':>7}  {'worst VSWR':>10}  {'phased VSWR':>11}"]
+        for f, v, rl, w, c in zip(self.freqs, self.vswr, self.return_loss_db, self.vswr_worst, self.vswr_phased):
+            lines.append(f"{fmt_freq(f, 9):>16}  {v:7.3f}  {rl:7.2f}  {w:10.3f}  {c:11.3f}")
         return "\n".join(lines)
 
 
@@ -462,7 +530,7 @@ def match_sweep(circuit: Circuit, port, freqs, settings: Settings | None = None)
     nominal = circuit.simulate(_settings(settings))
     ms = [port_match(circuit, port, f, nominal=nominal) for f in freqs]
     return MatchSweep(ms[0].port, freqs, np.array([m.vswr for m in ms]), np.array([m.vswr_worst for m in ms]),
-                      np.array([m.return_loss_db for m in ms]))
+                      np.array([m.return_loss_db for m in ms]), np.array([m.vswr_phased for m in ms]))
 
 
 @dataclass

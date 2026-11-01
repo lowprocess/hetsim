@@ -12,7 +12,7 @@ Everything here imports from `hetsim`. The docstrings have the details.
 | `simulate(settings)` | Tone solver; returns a `Result` |
 | `simulate_td(settings, td)` | Time-domain solver; returns a `TDResult` |
 | `simulate_sweep(settings, points, workers)` | Steps the `mode: sweep` tones; returns a `BandSweep` |
-| `Settings` | Solver options: `floor_dbm`, `max_tones`, `im_max_tones`, `tol_db`, `max_iter`, `td` |
+| `Settings` | Solver options: `floor_dbm`, `max_tones`, `im_max_tones`, `tol_db`, `max_iter`, `td`, `coherent` |
 
 ## Blocks
 
@@ -26,12 +26,13 @@ Everything here imports from `hetsim`. The docstrings have the details.
 | `SParamFilter` | `sparam` | A Touchstone `.s2p` file |
 | `IQMixer` | `iq_mixer` | Quadrature pair and combination: sideband, gain and phase imbalance, and all a `Mixer` has |
 | `ADC` | `adc` | Aliasing, clipping, quantisation, noise floor, harmonics |
+| `Line` | `line` | Delay and loss; switches on the coherent solver |
 | `Attenuator` | `attenuator` | Flat loss |
 | `Splitter` | `splitter` | 2-way splitter or combiner |
 | `Load` | `load` | Termination |
 | `Detector`, `XYPlot` | `detector`, `xyplot` | Power reading and X/Y display, for the desktop app (import from `hetsim.blocks`) |
 
-All RF blocks take `vswr`. `register(kind)` adds a block type, and `REGISTRY` holds them.
+All RF blocks take `vswr`; `Filter` also takes `vswr="reactive"`, which derives the reflection from its response. `register(kind)` adds a block type, and `REGISTRY` holds them.
 
 ## Results
 

@@ -9,6 +9,7 @@ is the full guide to the model and the viewers. These pages are the short route 
 | [usage.md](usage.md) | Building a circuit in Python or YAML, and running each analysis from the command line |
 | [architecture.md](architecture.md) | How the solvers, blocks and analyses fit together, and how to add a block |
 | [api_reference.md](api_reference.md) | The public classes and functions |
+| [../ROADMAP.md](../ROADMAP.md) | Known limitations and what comes next |
 
 ## Installation
 

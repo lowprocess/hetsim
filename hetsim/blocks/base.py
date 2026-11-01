@@ -9,6 +9,10 @@ incident->outgoing term on the same port, which the solvers add for every block.
 Blocks also describe themselves to the small-signal analyses (hetsim.smallsignal):
 transfers() lists what feeds a port at a frequency, and noise_target() how much noise
 the port delivers when everything around it sits at T0.
+
+For the coherent solver (hetsim.coherent) a block splits what respond() does in two:
+linear_c() lists its same-frequency paths as complex gains, solved directly with the
+rest of the network, and generate() returns what it creates: source tones and products.
 """
 from __future__ import annotations
 
@@ -38,6 +42,7 @@ class Context:
     im_max_tones: int = 24             # strongest N tones considered for 2-tone IM products
     im_window_db: float = 100.0        # ...and only those within this many dB of the strongest
     warn: Callable[[str], None] = field(default=lambda msg: None)
+    seed: int = 1                      # for source phases left unspecified
 
 
 def _gamma2(v) -> float:
@@ -71,6 +76,8 @@ def parse_vswr(x, ports) -> dict:
 
 class Block:
     kind = "block"
+    needs_coherent = False            # phase is the point of this block: its circuits use the coherent solver
+    td_linear = False                 # linear_c() is all it does, so the time-domain network solve needn't call it
     ports: tuple[str, ...] = ()
     controls: tuple[str, ...] = ()   # ports that carry no RF (X/Y plot wiring); wired only to each other
     default_in: str | None = None
@@ -141,6 +148,20 @@ class Block:
         """(IIP3 at the signal input, output P1dB) in dBm, for the receiver budget; None: not limiting."""
         return None, None
 
+    # -- coherent solver (hetsim.coherent) ---------------------------------
+    def linear_c(self, port: str, f: np.ndarray, op) -> list[tuple[str, np.ndarray]]:
+        """What feeds `port` at the same frequency, reflection excluded: [(input port, complex gain at each of f)]."""
+        return []
+
+    def generate(self, incident: dict[str, Spectrum], op, ctx: Context) -> dict[str, Spectrum]:
+        """What the block creates, as tones at its ports, from the waves arriving at it."""
+        return {}
+
+    def conversions_c(self, port: str, f: float, op) -> list[tuple[str, float, complex, bool]]:
+        """Small waves converted to `port` at f: [(input port, input freq, complex gain, conjugates?)]. A
+        conjugate path is a lower sideband, where the input's phase arrives reversed."""
+        return []
+
     def __repr__(self) -> str:
         p = ", ".join(f"{k}={v!r}" for k, v in self.params.items())
         return f"{type(self).__name__}({p})"
@@ -151,6 +172,7 @@ class TwoPort(Block):
     ports = ("in", "out")
     default_in = "in"
     default_out = "out"
+    td_linear = True
 
     def s21_db(self, f):
         raise NotImplementedError
@@ -164,6 +186,10 @@ class TwoPort(Block):
 
     def s12_c(self, f):
         return 10 ** (np.asarray(self.s12_db(f), dtype=float) / 20)
+
+    def linear_c(self, port, f, op):
+        return [("in", np.broadcast_to(self.s21_c(f), np.shape(f)))] if port == "out" else \
+               [("out", np.broadcast_to(self.s12_c(f), np.shape(f)))]
 
     def transfers(self, port, f, op):
         db = self.s21_db(f) if port == "out" else self.s12_db(f)

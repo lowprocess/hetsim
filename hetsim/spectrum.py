@@ -4,20 +4,46 @@ A tone's identity is its *mixing vector*: the integer combination of
 fundamental source frequencies that produced it, e.g. {LO1: 1, RF: -1}. Its
 frequency follows from that vector, so two different products that happen to
 land on the same frequency stay separate (and labelled), while the same
-product reached by two paths merges by power sum.
+product reached by two paths merges by power sum, or as phasors under coherent_mode().
+
+A tone also carries its phase: the wave is cos(2*pi*f*t + phase). The power solver ignores it.
 
 Signals are real, so frequencies are kept positive: a product computed as
 negative is flipped (vector negated). Products at DC are dropped.
 """
 from __future__ import annotations
 
+import cmath
 import math
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Callable, Iterable, Iterator
 
 import numpy as np
 
 from .units import dbm_to_mw, fmt_freq, mw_to_dbm
+
+_COHERENT: ContextVar[bool] = ContextVar("hetsim_coherent", default=False)
+
+
+@contextmanager
+def coherent_mode():
+    """Inside this, tones of one mixing vector merge as phasors rather than by power."""
+    token = _COHERENT.set(True)
+    try:
+        yield
+    finally:
+        _COHERENT.reset(token)
+
+
+def _merge(e: list, mw: float, phase: float) -> None:
+    if _COHERENT.get():
+        z = cmath.rect(math.sqrt(e[1]), e[2]) + cmath.rect(math.sqrt(mw), phase)
+        e[1], e[2] = abs(z) ** 2, cmath.phase(z)
+    else:
+        e[1] += mw
+
 
 Vec = tuple  # tuple of (symbol, int coefficient) pairs, sorted by symbol, no zeros
 
@@ -94,6 +120,7 @@ class Tone:
     vec: Vec
     freq: float
     power_dbm: float
+    phase: float = 0.0   # radians
 
     @property
     def label(self) -> str:
@@ -125,32 +152,35 @@ class Spectrum:
     def __init__(self, tones: Iterable[Tone] = ()):
         self._t: dict[Vec, list] = {}
         for t in tones:
-            self.add(t.vec, t.freq, t.power_dbm)
+            self.add(t.vec, t.freq, t.power_dbm, phase=t.phase)
 
     # -- building ----------------------------------------------------------
-    def add(self, v: Vec, f: float, p_dbm: float, scale: float | None = None) -> None:
-        """Add a product; merges by power sum with an existing tone of the same vector."""
+    def add(self, v: Vec, f: float, p_dbm: float, scale: float | None = None, phase: float = 0.0) -> None:
+        """Add a product; merges with an existing tone of the same vector. A frequency computed as
+        negative flips the vector and the phase: cos(-wt + p) = cos(wt - p)."""
         if p_dbm == -math.inf:
             return
         c = canon(v, f, scale)
         if c is None:
             return
+        if f < 0:
+            phase = -phase
         v, f = c
         mw = dbm_to_mw(p_dbm)
         e = self._t.get(v)
         if e is None:
-            self._t[v] = [f, mw]
+            self._t[v] = [f, mw, phase]
         else:
-            e[1] += mw
+            _merge(e, mw, phase)
 
-    def add_spectrum(self, other: "Spectrum", gain_db: float = 0.0) -> None:
+    def add_spectrum(self, other: "Spectrum", gain_db: float = 0.0, phase: float = 0.0) -> None:
         g = 10 ** (gain_db / 10)
-        for v, (f, mw) in other._t.items():
+        for v, (f, mw, ph) in other._t.items():
             e = self._t.get(v)
             if e is None:
-                self._t[v] = [f, mw * g]
-            else:
-                e[1] += mw * g
+                self._t[v] = [f, mw * g, ph + phase]
+            elif g > 0:
+                _merge(e, mw * g, ph + phase)
 
     def scaled(self, gain_db: float) -> "Spectrum":
         s = Spectrum()
@@ -169,7 +199,7 @@ class Spectrum:
         out = mws * 10 ** (g / 10)
         for v, f, mw in zip(vs, fs, out):
             if mw > 0:
-                s._t[v] = [float(f), float(mw)]
+                s._t[v] = [float(f), float(mw), self._t[v][2]]
         return s
 
     def prune(self, floor_dbm: float, max_tones: int | None = None) -> "Spectrum":
@@ -191,8 +221,8 @@ class Spectrum:
         return len(self._t)
 
     def __iter__(self) -> Iterator[Tone]:
-        for v, (f, mw) in sorted(self._t.items(), key=lambda kv: kv[1][0]):
-            yield Tone(v, f, mw_to_dbm(mw))
+        for v, (f, mw, ph) in sorted(self._t.items(), key=lambda kv: kv[1][0]):
+            yield Tone(v, f, mw_to_dbm(mw), ph)
 
     def __contains__(self, label_or_vec) -> bool:
         return self._key(label_or_vec) in self._t
@@ -207,7 +237,7 @@ class Spectrum:
             # the same product may be stored with the opposite sign
             e = self._t.get(vec_neg(v))
             v = vec_neg(v)
-        return Tone(v, e[0], mw_to_dbm(e[1])) if e else None
+        return Tone(v, e[0], mw_to_dbm(e[1]), e[2]) if e else None
 
     def power(self, label_or_vec) -> float:
         t = self.get(label_or_vec)
@@ -256,7 +286,7 @@ class Spectrum:
         return [{"freq": t.freq, "power_dbm": t.power_dbm, "label": t.label, "order": t.order}
                 for t in self]
 
-    def approx_equal(self, other: "Spectrum", tol_db: float, floor_dbm: float) -> bool:
+    def approx_equal(self, other: "Spectrum", tol_db: float, floor_dbm: float, tol_phase: float | None = None) -> bool:
         lim = dbm_to_mw(floor_dbm)
         keys = {v for v, e in self._t.items() if e[1] >= lim} | \
                {v for v, e in other._t.items() if e[1] >= lim}
@@ -266,6 +296,8 @@ class Spectrum:
             if a is None or b is None:
                 return False
             if abs(10 * math.log10(a[1] / b[1])) > tol_db:
+                return False
+            if tol_phase is not None and abs(cmath.phase(cmath.rect(1.0, a[2] - b[2]))) > tol_phase:
                 return False
         return True
 

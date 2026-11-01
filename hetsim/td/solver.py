@@ -32,6 +32,8 @@ from functools import reduce
 
 import numpy as np
 from scipy import fft as sfft
+from scipy.sparse import csc_matrix, identity
+from scipy.sparse.linalg import splu
 
 from ..circuit import Circuit, Settings
 from ..spectrum import Spectrum
@@ -158,6 +160,107 @@ class TDContext:
         return np.zeros(self.n)
 
 
+PRECISION_FLOOR = 1e-3     # with tol 1e-12, a change 1e-15 of the largest wave is rounding
+RUNAWAY_VOLTS = 1e3        # RMS: no real wave gets here (over 70 dBm)
+RUNAWAY = "waves kept growing, so the solve stopped and these levels mean nothing: products gain on each pass. A mixer " \
+          "with reflective filters on both ports does this: put a pad of about 6 dB on one side, or give one filter a plain vswr"
+
+
+def _factorise(circuit, ops, f, index, chunk=20000):
+    """Sparse LUs of I - A(f), one per chunk of bins, and the largest loop gain seen. A bin's block is mostly
+    empty, about two entries per port along a chain, which beats a dense solve per bin. Bins don't
+    couple, so chunks keep the matrices within what the factorisation can handle."""
+    from ..coherent import BATCH_TONES, _loop_gain, _network
+    size = len(index)
+    lus, loop = [], 0.0
+    for first in range(0, len(f), chunk):
+        part = f[first:first + chunk]
+        rows, cols, vals = [], [], []
+        for start in range(0, len(part), BATCH_TONES):
+            a = _network(circuit, ops, part[start:start + BATCH_TONES], index)
+            loop = max(loop, _loop_gain(a))
+            k, i, j = np.nonzero(a)
+            at = (k + start) * size
+            rows.append(at + i)
+            cols.append(at + j)
+            vals.append(a[k, i, j])
+        n = len(part) * size
+        m = identity(n, format="csc", dtype=complex) - csc_matrix(
+            (np.concatenate(vals), (np.concatenate(rows), np.concatenate(cols))), shape=(n, n), dtype=complex)
+        lus.append((first, first + len(part), splu(m)))
+    return lus, loop
+
+
+def _solve_reflecting(circuit, plan, tds, models, ctxs, all_ports, zero):
+    """The wave iteration for a circuit with reflections, where plain rounds would crawl or stall.
+
+    As in the coherent tone solver, the linear network is solved directly, here per FFT bin, for the
+    bins holding anything. Only what the blocks add beyond their linear paths goes round: everything
+    a source or mixer makes, and the difference between an amplifier and its small-signal gain.
+    That settles in a few rounds however strong the reflections.
+    """
+    rf = [(n, p) for n, b in circuit.blocks.items() for p in b.ports if p not in b.controls]
+    index = {k: i for i, k in enumerate(rf)}
+    ops = {n: getattr(b, "gain", None) for n, b in circuit.blocks.items()}
+    f = ctxs[next(iter(ctxs))].f
+    n_bins = len(f)
+    incident = {p: zero for p in all_ports}
+    outgoing = {p: zero for p in all_ports}
+    active = [n for n, b in circuit.blocks.items() if not b.td_linear]
+    converged, loop = False, 0.0
+    lu, lu_bins = None, None
+    it = 0
+    for it in range(1, tds.max_iter + 1):
+        s = {}
+        for n in active:
+            b = circuit.blocks[n]
+            inc = {p: incident[(n, p)] for p in b.ports}
+            res = models[n](b, inc, ctxs[n])
+            specs = {q: sfft.rfft(inc[q]) for q in b.ports if q not in b.controls and inc[q].any()}
+            for p in b.ports:
+                if p in b.controls:
+                    continue
+                y = res.get(p)
+                y = sfft.rfft(y) if y is not None and y.any() else np.zeros(n_bins, complex)
+                for q, g in b.linear_c(p, f, ops[n]):
+                    if q in specs:
+                        y = y - g * specs[q]
+                if np.any(y):
+                    s[(n, p)] = y
+        power = np.zeros(n_bins)
+        for y in s.values():
+            power += np.abs(y) ** 2
+        top = power.max() if len(power) else 0.0
+        bins = np.nonzero(power > 1e-34 * top)[0] if top > 0 else np.zeros(0, int)
+        x = np.zeros((n_bins, len(rf)), complex)
+        if len(bins):
+            # the network doesn't change between rounds, so factorise once, for as many bins as have held anything
+            if lu is None or len(np.setdiff1d(bins, lu_bins, assume_unique=True)):
+                lu_bins = bins if lu is None else np.union1d(lu_bins, bins)
+                lu, loop = _factorise(circuit, ops, f[lu_bins], index)
+            src = np.zeros((len(lu_bins), len(rf)), complex)
+            for key, y in s.items():
+                src[:, index[key]] = y[lu_bins]
+            for first, last, part in lu:
+                x[lu_bins[first:last]] = part.solve(src[first:last].ravel()).reshape(last - first, len(rf))
+        outgoing = {p: zero for p in all_ports}
+        for key, i in index.items():
+            if np.any(x[:, i]):
+                outgoing[key] = sfft.irfft(x[:, i], plan.n)
+        new_inc = {p: (outgoing[circuit.wires[p]] if p in circuit.wires else zero) for p in all_ports}
+        # relative to each wave, but a wave below the largest's rounding error never settles: it is only that error
+        norms = {p: np.linalg.norm(new_inc[p]) for p in all_ports}
+        floor = PRECISION_FLOOR * max(norms.values())
+        done = all(np.linalg.norm(new_inc[p] - incident[p]) <= tds.tol * max(norms[p], floor, 1e-300) for p in all_ports)
+        incident = new_inc
+        if done:
+            converged = True
+            break
+        if max(norms.values()) > RUNAWAY_VOLTS * math.sqrt(plan.n):
+            break
+    return incident, outgoing, it, converged and loop < 1.0, loop
+
+
 def simulate_td(circuit: Circuit, settings: Settings | None = None, td=None, **td_kw) -> "TDResult":
     """Run the time-domain solver. `td` is a TDSettings or dict; keyword arguments override it."""
     from .models import get_model
@@ -198,7 +301,8 @@ def simulate_td(circuit: Circuit, settings: Settings | None = None, td=None, **t
     last_inputs: dict = {}
     converged = False
     it = 0
-    for it in range(1, tds.max_iter + 1):
+    reflecting = any(b.gamma2 for b in circuit.blocks.values())
+    for it in range(1, 0 if reflecting else tds.max_iter + 1):
         prev_out, outgoing = outgoing, {}
         for n, b in circuit.blocks.items():
             inc = [incident[(n, p)] for p in b.ports]
@@ -234,6 +338,13 @@ def simulate_td(circuit: Circuit, settings: Settings | None = None, td=None, **t
         if done:
             converged = True
             break
+    if reflecting:
+        incident, outgoing, it, converged, loop = _solve_reflecting(circuit, plan, tds, models, ctxs, all_ports, zero)
+        if not converged and max(np.linalg.norm(w) for w in outgoing.values()) > RUNAWAY_VOLTS * math.sqrt(plan.n):
+            warnings.setdefault("<solver>", []).append(RUNAWAY)
+        if loop >= 1.0:
+            warnings.setdefault("<solver>", []).append(f"a feedback loop has gain {loop:.2f} at some frequency: "
+                                                       "no steady state, these levels mean nothing")
     if not converged:
         warnings.setdefault("<solver>", []).append(f"did not converge in {tds.max_iter} iterations")
     return TDResult(circuit, plan, tds, incident, outgoing, it, converged, warnings, tone)

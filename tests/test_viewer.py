@@ -455,7 +455,7 @@ def test_analysis_options_and_kinds():
     assert "noise figure" in r["text"] and [c["id"] for c in r["charts"]] == ["nf", "gain"]
     assert not analyse(m, {"kind": "noise", "port": "ifamp.out", **base})["charts"]    # spot: a table only
     r = analyse(m, {"kind": "match", "port": "lna.in", "range": "88MHz:108MHz", "points": 5, **base})
-    assert [s["name"] for s in r["charts"][0]["series"]] == ["Typical", "Worst case"] and len(r["charts"][0]["x"]) == 5
+    assert [s["name"] for s in r["charts"][0]["series"]] == ["Phased", "Worst case"] and len(r["charts"][0]["x"]) == 5
     assert "lna.in" in analyse(m, {"kind": "wires", **base})["text"]
     assert "cum NF" in analyse(m, {"kind": "budget", "bw": "200kHz", **base})["text"]
     r = analyse(m, {"kind": "vary", "param": "lna.gain_db", "from": 5, "to": 25, "points": 3, "bw": "200kHz", **base})

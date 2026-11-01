@@ -263,7 +263,8 @@ def receiver_budget(circuit: Circuit, source: str | None = None, tone=None, port
             b = circuit[name]
             fits = [t for t in nominal[out_ref] if vec_coeff(t.vec, spec.name) and _fits(t.vec, final)]
             if not fits:
-                raise ValueError(f"the signal doesn't reach {name}.{p}")
+                failed = nominal.warnings.get("<solver>")
+                raise ValueError(failed[0] if failed else f"the signal doesn't reach {name}.{p}")
             t = max(fits, key=lambda x: x.power_dbm)
             r = noise_figure(circuit, source, out_ref, None, spec.name, settings, product=t.vec, nominal=nominal)
             iip3, op1 = b.linearity()

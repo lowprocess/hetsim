@@ -59,12 +59,12 @@ class ADC(Block):
     def sample_rate(self) -> float:
         return self.fs
 
-    def _fold(self, out: Spectrum, v, f: float, p: float) -> None:
+    def _fold(self, out: Spectrum, v, f: float, p: float, phase: float = 0.0) -> None:
         k = round(f / self.fs)
         if k == 0:
-            out.add(v, f, p)
+            out.add(v, f, p, phase=phase)
         else:
-            out.add(vec_comb(vec_of(self.sym, k), 1, v, -1), k * self.fs - f, p, scale=k * self.fs)
+            out.add(vec_comb(vec_of(self.sym, k), 1, v, -1), k * self.fs - f, p, scale=k * self.fs, phase=-phase)
 
     def respond(self, incident, ctx):
         s, out = incident["in"], Spectrum()
@@ -72,13 +72,16 @@ class ADC(Block):
             ctx.warn(f"input {s.total_dbm():.1f} dBm is over full scale ({self.fsdbm:.1f} dBm): it clips, which only "
                      "the time-domain solver shows")
         for t in s:
-            self._fold(out, t.vec, t.freq, t.power_dbm)
+            self._fold(out, t.vec, t.freq, t.power_dbm, t.phase)
             for n, dbc in ((2, self.hd2), (3, self.hd3)):
                 if dbc is not None:
                     p = t.power_dbm + dbc + (n - 1) * (t.power_dbm - self.fsdbm)
                     if p >= ctx.floor_dbm:
-                        self._fold(out, vec_comb(t.vec, n, (), 0), n * t.freq, p)
+                        self._fold(out, vec_comb(t.vec, n, (), 0), n * t.freq, p, n * t.phase)
         return {"out": out}
+
+    def generate(self, incident, op, ctx):
+        return self.respond(incident, ctx)
 
     # -- small signal -------------------------------------------------------
     def transfers(self, port, f, op):

@@ -1,0 +1,17 @@
+# An antenna on 10 m of coax into a mismatched LNA: the reflections beat, and the ripple is real.
+# Looking into the coax, its connector and the LNA's input are two mismatches a cable apart. (Looking
+# into the LNA shows only its own match: its reverse isolation hides what's behind it.)
+#   python -m hetsim match examples/vhf_cable.yaml --port coax.in --range 88MHz:108MHz --points 41
+#   python -m hetsim run examples/vhf_cable.yaml -p iff.out --band 10MHz:12MHz
+#   python -m hetsim run examples/vhf_cable.yaml -p iff.out --band 10MHz:12MHz --solver td
+name: VHF on a cable
+blocks:
+  ant: {type: source, vswr: 2.5, tones: [{name: RF, band: [88MHz, 108MHz], mode: sweep, points: 41, freq: 100MHz, power: -60}]}
+  coax: {type: line, length_m: 10, velocity_factor: 0.66, loss_db: 1.2, vswr: 1.2}
+  lna: {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, reverse_isolation_db: 30, vswr: {in: 2.0}}
+  lo:  {type: source, tones: [{name: LO, band: [98.7MHz, 118.7MHz], mode: sweep, points: 41, freq: 110.7MHz, power: 7}]}
+  mix: {type: mixer, conversion_loss_db: 6, lo_rf_isolation_db: 35, rf_if_isolation_db: 25, nf_db: 6.5}
+  iff: {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90}
+chain: [ant, coax, lna, mix, iff]
+wires:
+  - [lo.out, mix.lo]

@@ -31,6 +31,7 @@ import zlib
 import numpy as np
 
 from ..blocks import ADC, Amplifier, IQMixer, Load, Mixer, Source, Splitter, TwoPort
+from ..blocks.sources import tone_phase
 
 TD_MODELS: dict[type, callable] = {}
 
@@ -56,13 +57,6 @@ def _db(x):
 
 
 # ---------------------------------------------------------------- sources
-def _tone_phase(seed, name, given):
-    if given is not None:
-        return math.radians(given)
-    rng = np.random.default_rng([seed, zlib.crc32(name.encode())])
-    return float(rng.uniform(0, 2 * math.pi))
-
-
 def _phase_noise(t, ctx) -> np.ndarray | None:
     """Periodic phase modulation phi(n) with the tone's SSB profile: one sinusoid per FFT bin
     offset k*df, amplitude 2*sqrt(L*df) (so each sideband holds L*df), random phase."""
@@ -91,7 +85,7 @@ def _source(b: Source, inc, ctx):
         X = np.zeros(ctx.n // 2 + 1, complex)
         xt = None   # tones with phase noise are built in the time domain
         for t in b.tones:
-            ph = _tone_phase(ctx.seed, t.name, t.phase)
+            ph = tone_phase(ctx.seed, t.name, t.phase)
             phi = _phase_noise(t, ctx) if t.phase_noise else None
             for k, dbc in [(1, 0.0)] + list(enumerate(b.harmonics_dbc, start=2)):
                 kb = int(round(k * t.freq / ctx.df))

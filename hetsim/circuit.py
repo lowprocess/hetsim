@@ -29,6 +29,8 @@ class Settings:
     tol_db: float = 0.001           # convergence tolerance
     max_iter: int = 200
     td: dict | None = None          # time-domain solver options (see hetsim.td.TDSettings)
+    coherent: bool | None = None    # track phase (hetsim.coherent); default: when the circuit has a line
+    tol_deg: float = 0.01           # coherent solver: phase convergence tolerance
 
 
 class Circuit:
@@ -152,6 +154,9 @@ class Circuit:
         for k, v in kw.items():
             setattr(st, k, v)
         self.symbols()  # validates uniqueness
+        if st.coherent or (st.coherent is None and any(b.needs_coherent for b in self.blocks.values())):
+            from .coherent import simulate_coherent
+            return simulate_coherent(self, st)
 
         warnings: dict[str, list[str]] = {}
 

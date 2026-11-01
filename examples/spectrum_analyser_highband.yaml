@@ -1,3 +1,5 @@
+# A swept single-conversion analyser for the high band, with a detector and an X/Y display.
+#   python -m hetsim app examples/spectrum_analyser_highband.yaml
 name: spectrum analyser
 blocks:
   lpf:

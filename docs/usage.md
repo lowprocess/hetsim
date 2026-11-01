@@ -67,6 +67,14 @@ python -m hetsim budget examples/vhf_noise_match.yaml --tone RF --bw 200kHz --va
 # Monte Carlo over the netlist's tolerances, with yield against limits
 python -m hetsim tolerance examples/vhf_noise_match.yaml --tone RF --bw 200kHz --runs 100 --spec 'nf_db<=3.2'
 
+# a cable: reflections with real phase, in the coherent solver
+python -m hetsim match examples/vhf_cable.yaml --port coax.in --range 88MHz:108MHz --points 11
+python -m hetsim run examples/vhf_cable.yaml -p iff.out --band 10MHz:12MHz
+
+# filters that reflect what they reject, and a mixer between two of them
+python -m hetsim match examples/vhf_reactive.yaml --port iff.in --range 10.2MHz:11.2MHz --points 21
+python -m hetsim run examples/vhf_reactive_pad.yaml -p ifamp.out --sort power --limit 8
+
 # two architectures side by side
 python -m hetsim budget examples/rx_superhet.yaml examples/rx_direct_conversion.yaml --tone RF --bw 200kHz --offset 1MHz
 

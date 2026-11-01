@@ -1,0 +1,32 @@
+# The VHF receiver with filters that reflect what they reject, phase included.
+#   python -m hetsim match examples/vhf_reactive.yaml --port iff.in --range 10.2MHz:11.2MHz --points 21
+#   python -m hetsim noise examples/vhf_reactive.yaml --source ant --tone RF --port ifamp.out --band 10.6MHz:10.8MHz
+#   python -m hetsim budget examples/vhf_reactive.yaml --tone RF --bw 200kHz
+#   python -m hetsim run examples/vhf_reactive.yaml -p ifamp.out --solver td --band 9MHz:12MHz
+# `img` stays absorptive on purpose. Make it reactive too and the mixer has reflective filters on both
+# ports, which won't settle: the solvers stop and say so. vhf_reactive_pad.yaml shows the fix.
+name: VHF reactive filters
+blocks:
+  ant:
+    type: source
+    vswr: 2.0
+    tones:
+      - {name: RF, freq: 100MHz, power: -80}
+  pre:  {type: filter, response: bandpass, family: butter, order: 3, f1: 80MHz, f2: 120MHz, insertion_loss_db: 0.5, vswr: reactive}
+  lna:  {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, op1db_dbm: 18, reverse_isolation_db: 30, vswr: {in: 1.8, out: 1.5}}
+  img:  {type: filter, response: bandpass, family: butter, order: 5, f1: 88MHz, f2: 108MHz, insertion_loss_db: 1.5}
+  lo:   {type: source, name: LO, freq: 110.7MHz, power: 7}
+  mix:
+    type: mixer
+    conversion_loss_db: 6
+    lo_rf_isolation_db: 35
+    lo_if_isolation_db: 30
+    rf_if_isolation_db: 25
+    spur_table: dbm_generic
+    nf_db: 6.5
+    vswr: {rf: 1.5, lo: 2.5, if: 1.8}
+  iff:  {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90, vswr: reactive}
+  ifamp: {type: amplifier, gain_db: 20, nf_db: 4, oip3_dbm: 25}
+chain: [ant, pre, lna, img, mix, iff, ifamp]
+wires:
+  - [lo.out, mix.lo]

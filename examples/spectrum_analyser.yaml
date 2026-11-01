@@ -1,3 +1,5 @@
+# A swept dual-conversion spectrum analyser with a detector and an X/Y display: open it in the desktop app.
+#   python -m hetsim app examples/spectrum_analyser.yaml
 name: spectrum analyser
 blocks:
   ant:

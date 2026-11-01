@@ -35,6 +35,7 @@ class Detector(Block):
     ports = ("in", "out")
     controls = ("out",)
     default_in = "in"
+    td_linear = True
 
     def __init__(self, fmin=None, fmax=None, detect="peak", scale="log", vswr=None):
         super().__init__(fmin=fmin, fmax=fmax, detect=detect, scale=None if scale == "log" else scale, vswr=vswr)
@@ -82,6 +83,7 @@ class XYPlot(Block):
     detector's `out` (its reading at each sweep step). Both are control ports."""
     ports = ("x", "y")
     controls = ("x", "y")
+    td_linear = True
 
     def __init__(self):
         super().__init__()

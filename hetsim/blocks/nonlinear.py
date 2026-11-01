@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import math
 
+import numpy as np
+
 from ..spectrum import Spectrum, vec_comb
 from ..units import parse_db
 from .base import Block, Context, register
@@ -39,26 +41,28 @@ def nonlinear_products(s: Spectrum, ctx: Context, ip3=None, ip2=None, harmonics=
             if harmonics:
                 p = 3 * a.power_dbm - 2 * ip3 - HD3_REL
                 if p >= floor:
-                    out.add(vec_comb(a.vec, 3, (), 0), 3 * a.freq, p)
+                    out.add(vec_comb(a.vec, 3, (), 0), 3 * a.freq, p, phase=3 * a.phase + math.pi)
             for j, b in enumerate(tones):
                 if i == j:
                     continue
                 p = 2 * a.power_dbm + b.power_dbm - 2 * ip3
                 if p < floor:
                     continue
-                out.add(vec_comb(a.vec, 2, b.vec, -1), 2 * a.freq - b.freq, p, scale=2 * a.freq)
-                out.add(vec_comb(a.vec, 2, b.vec, 1), 2 * a.freq + b.freq, p)
+                # a compressive cubic: third-order products come out inverted
+                out.add(vec_comb(a.vec, 2, b.vec, -1), 2 * a.freq - b.freq, p, scale=2 * a.freq,
+                        phase=2 * a.phase - b.phase + math.pi)
+                out.add(vec_comb(a.vec, 2, b.vec, 1), 2 * a.freq + b.freq, p, phase=2 * a.phase + b.phase + math.pi)
         if ip2 is not None:
             if harmonics:
                 p = 2 * a.power_dbm - ip2 - HD2_REL
                 if p >= floor:
-                    out.add(vec_comb(a.vec, 2, (), 0), 2 * a.freq, p)
+                    out.add(vec_comb(a.vec, 2, (), 0), 2 * a.freq, p, phase=2 * a.phase)
             for b in tones[i + 1:]:
                 p = a.power_dbm + b.power_dbm - ip2
                 if p < floor:
                     continue
-                out.add(vec_comb(a.vec, 1, b.vec, 1), a.freq + b.freq, p)
-                out.add(vec_comb(a.vec, 1, b.vec, -1), a.freq - b.freq, p, scale=a.freq)
+                out.add(vec_comb(a.vec, 1, b.vec, 1), a.freq + b.freq, p, phase=a.phase + b.phase)
+                out.add(vec_comb(a.vec, 1, b.vec, -1), a.freq - b.freq, p, scale=a.freq, phase=a.phase - b.phase)
     return out
 
 
@@ -71,9 +75,10 @@ _X1DB = (10 ** (2 * _RAPP_P / 20) - 1) ** (1 / (2 * _RAPP_P))
 def rapp_compression_db(p_lin_out_dbm: float, op1db_dbm: float) -> float:
     """Gain change (<= 0 dB) for a total linear output power, Rapp p=2, given output P1dB."""
     psat = op1db_dbm + 1.0 - 20 * math.log10(_X1DB)
-    x = 10 ** ((p_lin_out_dbm - psat) / 20)
-    g = (1 + x ** (2 * _RAPP_P)) ** (-1 / (2 * _RAPP_P))
-    return 20 * math.log10(g)
+    over = (p_lin_out_dbm - psat) / 20      # log10 of the drive relative to saturation
+    if over > 10:                           # the 1 in 1 + x^2p no longer counts, and x^2p may overflow
+        return -20 * over
+    return -20 / (2 * _RAPP_P) * math.log10(1 + 10 ** (2 * _RAPP_P * over))
 
 
 @register("amplifier")
@@ -121,6 +126,18 @@ class Amplifier(Block):
         if self.oip3 is not None or self.oip2 is not None:
             lin.add_spectrum(nonlinear_products(lin, ctx, self.oip3, self.oip2, self.harmonics))
         return {"out": lin, "in": incident["out"].scaled(-self.rev_iso)}
+
+    def linear_c(self, port, f, op):
+        if port == "out":
+            return [("in", np.full(np.shape(f), 10 ** (op / 20) + 0j))]
+        return [("out", np.full(np.shape(f), 10 ** (-self.rev_iso / 20) + 0j))]
+
+    def generate(self, incident, op, ctx):
+        if self.oip3 is None and self.oip2 is None:
+            return {}
+        if self.op1db is not None and op < self.gain - 0.5:
+            ctx.warn(f"compressed by {self.gain - op:.1f} dB")
+        return {"out": nonlinear_products(incident["in"].scaled(op), ctx, self.oip3, self.oip2, self.harmonics)}
 
     def linearity(self):
         return (self.oip3 - self.gain if self.oip3 is not None else None), self.op1db

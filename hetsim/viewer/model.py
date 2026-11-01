@@ -70,6 +70,7 @@ RANGES = {
     "max_order": (2, 20, 1, 4),
     "nf_db": (0, 30, 0.1, 3), "vswr": (1, 10, 0.05, 1.5),
     "gain_imbalance_db": (-3, 3, 0.05, 0.5), "phase_imbalance_deg": (-20, 20, 0.1, 2),
+    "delay_ns": (0, 1000, 0.1, 5), "length_m": (0, 300, 0.01, 1), "velocity_factor": (0.1, 1, 0.01, 0.66),
     "bits": (4, 24, 1, 14), "full_scale_dbm": (-20, 30, 0.5, 10), "snr_db": (20, 120, 0.5, 70),
     "hd2_dbc": (-120, -30, 1, -80), "hd3_dbc": (-120, -30, 1, -80),
 }
@@ -133,6 +134,7 @@ ADD_DEFAULTS = {
     "amplifier": {"gain_db": 10},
     "mixer": {"conversion_loss_db": 6},
     "iq_mixer": {"conversion_loss_db": 6, "sideband": "lower"},
+    "line": {"delay_ns": 5},
     "adc": {"sample_rate": "100MHz", "bits": 14},
     "filter": {"response": "lowpass", "family": "butter", "order": 3, "fc": "100MHz"},
     "ideal_filter": {"fmin": "1MHz", "fmax": "100MHz"},
@@ -142,7 +144,7 @@ ADD_DEFAULTS = {
     "detector": {"detect": "peak"},
     "xyplot": {},
 }
-_PREFIX = {"source": "src", "amplifier": "amp", "mixer": "mix", "iq_mixer": "iq", "adc": "adc", "filter": "flt", "ideal_filter": "flt",
+_PREFIX = {"source": "src", "amplifier": "amp", "mixer": "mix", "iq_mixer": "iq", "adc": "adc", "line": "line", "filter": "flt", "ideal_filter": "flt",
            "attenuator": "att", "splitter": "split", "load": "load", "detector": "det", "xyplot": "xy"}
 _NAME = re.compile(r"[A-Za-z_][\w-]*$")
 _KEY = re.compile(r"""["']?([^"'\s:#\-\[{][^"':]*?)["']?[ \t]*:(?:[ \t]|$)""")
@@ -385,7 +387,7 @@ def describe(d: dict) -> list[dict]:
             if pname == "self" or pname in SKIP or p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
                 continue
             raw = spec.get(pname, p.default)
-            if pname == "vswr" and isinstance(raw, (dict, list, tuple)) or raw == "file":
+            if pname == "vswr" and isinstance(raw, (dict, list, tuple)) or raw in ("file", "reactive"):
                 continue  # per-port, a table, or from a file: edit it in the netlist
             optional = p.default is None
             enabled = raw is not None
@@ -422,7 +424,8 @@ def describe(d: dict) -> list[dict]:
                 if pname in ("order", "max_order", "bits"):
                     entry.update(kind="int", value=int(v), min=lo, max=hi, step=1)
                 else:
-                    unit = (":1" if pname == "vswr" else "deg" if pname.endswith("_deg") else "dBc" if pname.endswith("_dbc")
+                    unit = (":1" if pname == "vswr" else "ns" if pname == "delay_ns" else "m" if pname == "length_m"
+                            else "" if pname == "velocity_factor" else "deg" if pname.endswith("_deg") else "dBc" if pname.endswith("_dbc")
                             else "dBm" if pname.endswith("_dbm") else "dB")
                     entry.update(kind="number", value=v, min=min(lo, v), max=max(hi, v), step=step, unit=unit)
                 if kind == "filter" and pname == "ripple_db":

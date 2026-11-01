@@ -2,7 +2,10 @@
 from __future__ import annotations
 
 import math
+import zlib
 from dataclasses import dataclass, field
+
+import numpy as np
 
 from ..spectrum import Spectrum, vec_of
 from ..units import parse_db, parse_freq
@@ -13,6 +16,14 @@ MODES = ("cw", "tune", "sweep", "wideband")
 SPACINGS = ("lin", "log")
 SWEEP_POINTS = 41      # default steps of a swept tone
 WIDEBAND_POINTS = 21   # default tones in a wideband comb
+
+
+def tone_phase(seed: int, name: str, given) -> float:
+    """A tone's starting phase in radians: as given in degrees, or fixed pseudo-random by name."""
+    if given is not None:
+        return math.radians(given)
+    rng = np.random.default_rng([seed, zlib.crc32(name.encode())])
+    return float(rng.uniform(0, 2 * math.pi))
 
 
 @dataclass
@@ -247,6 +258,15 @@ class Source(Block):
             p["vswr"] = self.params["vswr"]
         return p
 
+    def generate(self, incident, op, ctx):
+        s = Spectrum()
+        for t in self.tones:
+            ph = tone_phase(ctx.seed, t.name, t.phase)
+            s.add(vec_of(t.name), t.freq, t.power, phase=ph)
+            for k, dbc in enumerate(self.harmonics_dbc, start=2):
+                s.add(vec_of(t.name, k), k * t.freq, t.power + dbc, phase=k * ph)
+        return {"out": s}
+
     def respond(self, incident, ctx):
         s = Spectrum()
         for t in self.tones:
@@ -261,6 +281,7 @@ class Load(Block):
     """Termination / probe point. Absorbs whatever arrives, apart from what `vswr` reflects."""
     ports = ("in",)
     default_in = "in"
+    td_linear = True
 
     def __init__(self, vswr=None):
         super().__init__(vswr=vswr)

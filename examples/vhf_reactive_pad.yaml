@@ -1,0 +1,32 @@
+# Reactive filters on both ports of the mixer, with the usual bench fix: a pad between it and one of them.
+#   python -m hetsim run examples/vhf_reactive_pad.yaml -p ifamp.out --sort power --limit 8
+#   python -m hetsim match examples/vhf_reactive_pad.yaml --port pad.in --range 85MHz:112MHz --points 28
+# That match is flat, because the IF filter sends most conversions back, except at 100 MHz: that one
+# converts into the IF passband and leaves.
+#   python -m hetsim budget examples/vhf_reactive_pad.yaml --tone RF --bw 200kHz
+name: VHF reactive filters with a pad
+blocks:
+  ant:
+    type: source
+    vswr: 2.0
+    tones:
+      - {name: RF, freq: 100MHz, power: -80}
+  pre:  {type: filter, response: bandpass, family: butter, order: 3, f1: 80MHz, f2: 120MHz, insertion_loss_db: 0.5, vswr: reactive}
+  lna:  {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, op1db_dbm: 18, reverse_isolation_db: 30, vswr: {in: 1.8, out: 1.5}}
+  img:  {type: filter, response: bandpass, family: butter, order: 5, f1: 88MHz, f2: 108MHz, insertion_loss_db: 1.5, vswr: reactive}
+  pad:  {type: attenuator, loss_db: 6}       # try 3 dB: the solve runs away, and says so
+  lo:   {type: source, name: LO, freq: 110.7MHz, power: 7}
+  mix:
+    type: mixer
+    conversion_loss_db: 6
+    lo_rf_isolation_db: 35
+    lo_if_isolation_db: 30
+    rf_if_isolation_db: 25
+    spur_table: dbm_generic
+    nf_db: 6.5
+    vswr: {rf: 1.5, lo: 2.5, if: 1.8}
+  iff:  {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90, vswr: reactive}
+  ifamp: {type: amplifier, gain_db: 20, nf_db: 4, oip3_dbm: 25}
+chain: [ant, pre, lna, img, pad, mix, iff, ifamp]
+wires:
+  - [lo.out, mix.lo]

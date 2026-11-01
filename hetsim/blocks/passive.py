@@ -25,11 +25,87 @@ class Attenuator(TwoPort):
         return np.full(np.shape(f), -self.loss_db)
 
 
+@register("line")
+class Line(TwoPort):
+    """A length of line: delay, so that reflections and parallel paths interfere, and loss.
+
+    delay_ns, or length_m with velocity_factor (fraction of c; default 0.66, solid PE coax)
+    loss_db   flat loss one way
+
+    A circuit with a line uses the coherent solver, since a delay means nothing in power alone.
+    The line itself is matched: mismatches are the `vswr` of what it joins.
+    """
+    needs_coherent = True
+
+    def __init__(self, delay_ns=None, length_m=None, velocity_factor=0.66, loss_db=0.0, vswr=None):
+        super().__init__(delay_ns=delay_ns, length_m=length_m, velocity_factor=velocity_factor, loss_db=loss_db, vswr=vswr)
+        if (delay_ns is None) == (length_m is None):
+            raise ValueError("a line takes delay_ns, or length_m and velocity_factor")
+        if delay_ns is not None:
+            self.delay = parse_db(delay_ns) * 1e-9
+        else:
+            vf = parse_db(velocity_factor)
+            if not 0 < vf <= 1:
+                raise ValueError("velocity_factor must be above 0 and at most 1")
+            self.delay = parse_db(length_m) / (vf * 299792458.0)
+        if self.delay < 0:
+            raise ValueError("a line can't have negative delay")
+        self.loss_db = parse_db(loss_db)
+
+    def s21_db(self, f):
+        return np.full(np.shape(f), -self.loss_db)
+
+    def s21_c(self, f):
+        return 10 ** (-self.loss_db / 20) * np.exp(-2j * math.pi * np.asarray(f, dtype=float) * self.delay)
+
+    s12_c = s21_c
+
+
 _FAMILIES = {"butter": "butter", "butterworth": "butter", "cheby1": "cheby1", "chebyshev": "cheby1",
              "cheby2": "cheby2", "ellip": "ellip", "elliptic": "ellip", "bessel": "bessel"}
 _RESPONSES = {"lowpass": "lowpass", "lp": "lowpass", "highpass": "highpass", "hp": "highpass",
               "bandpass": "bandpass", "bp": "bandpass", "bandstop": "bandstop", "bs": "bandstop",
               "notch": "bandstop"}
+REACTIVE_MIN_RL_DB = 0.1    # best return loss of a reactive stopband: a little is always dissipated
+UNITARY_TOL = 1e-6          # how far |S11|^2 + |S21|^2 of the prototype may stray from 1
+
+
+def _flip(c):
+    """c(s) -> c(-s), for coefficients highest power first."""
+    return c * (-1.0) ** np.arange(len(c) - 1, -1, -1)
+
+
+def _reflection_poly(family, z, p, k):
+    """(F, E) of a lossless filter S21 = P/E, S11 = F/E, from |F|^2 = |E|^2 - |P|^2 on the jw axis.
+
+    F(s)F(-s) = Q(s) is even, so work in u = s^2. Every family but Bessel has all its reflection zeros on
+    the axis, which makes Q an exact square, u^odd G(u)^2, and its square root is found directly: root-finding
+    would scatter those double roots. Bessel's zeros are off the axis and simple; taking the left half plane
+    gives the minimum-phase S11. Done on the normalised lowpass prototype, whose coefficients stay near 1
+    at any frequency, since a narrow filter's own polynomials would be far beyond floating point.
+    """
+    e = np.poly(p).real
+    b = k * (np.poly(z).real if len(z) else np.ones(1))
+    n = len(e) - 1
+    q = np.polysub(np.polymul(e, _flip(e)), np.polymul(b, _flip(b)))[-(2 * n + 1):][::2]
+    if family == "bessel":
+        return abs(q[0]) ** 0.5 * np.poly(-np.sqrt(np.roots(q).astype(complex))).real, e
+    odd = n % 2
+    r = q[:n + 1 - odd] * (-1.0) ** odd
+    g = np.zeros(n // 2 + 1)
+    g[0] = math.sqrt(abs(r[0]))
+    for i in range(1, len(g)):
+        g[i] = (r[i] - g[1:i] @ g[i - 1:0:-1]) / (2 * g[0])
+    f = np.zeros(n + 1)
+    f[::2] = g
+    return f, e
+
+
+def _ratio(num, den, s):
+    """num(s)/den(s) for polynomials of one degree, stable at any |s|: past 1, both are evaluated in 1/s."""
+    big = np.abs(s) > 1
+    w = np.where(big, 1 / np.where(big, s, 1), s)
+    return np.where(big, np.polyval(num[::-1], w) / np.polyval(den[::-1], w), np.polyval(num, w) / np.polyval(den, w))
 
 
 @register("filter")
@@ -46,6 +122,9 @@ class Filter(TwoPort):
     max_rejection_db  : ultimate rejection; real filters leak around themselves,
                         crystal filters typically 70-90 dB, a good cavity >100 dB.
 
+    vswr: reactive    reflects what it doesn't pass, as an LC filter does, from its own response
+                      rather than a number; see reflection_c. Uses the coherent solver.
+
     The edge definition follows scipy: -3 dB for butter, ripple edge for cheby1/ellip,
     stopband edge for cheby2.
     """
@@ -53,9 +132,14 @@ class Filter(TwoPort):
     def __init__(self, response="bandpass", family="butter", order=3, fc=None, f0=None, bw=None,
                  f1=None, f2=None, ripple_db=0.5, stop_db=60.0, insertion_loss_db=0.0,
                  max_rejection_db=120.0, vswr=None):
+        self.reactive = vswr == "reactive"
         super().__init__(response=response, family=family, order=order, fc=fc, f0=f0, bw=bw, f1=f1, f2=f2,
                          ripple_db=ripple_db, stop_db=stop_db, insertion_loss_db=insertion_loss_db,
-                         max_rejection_db=max_rejection_db, vswr=vswr)
+                         max_rejection_db=max_rejection_db, vswr=None if self.reactive else vswr)
+        if self.reactive:
+            self.params["vswr"] = vswr
+            self.gamma2 = {"in": (None, 0.0), "out": (None, 0.0)}   # reflection() below gives the values
+            self.needs_coherent = True      # a stopband loop is near total, which only a direct solve handles
         self.response = _RESPONSES[response.lower()]
         self.family = _FAMILIES[family.lower()]
         self.order = int(order)
@@ -89,6 +173,12 @@ class Filter(TwoPort):
         self._norm = 0.0
         probe = self._probe_freqs(wn)
         self._norm = -float(np.max(self._raw_db(probe)))
+        if self.reactive:
+            self._wn = wn
+            self._proto = signal.iirfilter(self.order, 1.0, btype="lowpass", analog=True, ftype=self.family,
+                                           output="zpk", **kw)
+            self._f, self._e = _reflection_poly(self.family, *self._proto)
+            self._check_unitary()
 
     @staticmethod
     def _probe_freqs(wn):
@@ -128,6 +218,66 @@ class Filter(TwoPort):
         return h * 10 ** (-self.il / 20)
 
     s12_c = s21_c
+
+    def _prototype_w(self, f):
+        """Where frequency f lands on the prototype's axis: the same mapping scipy built the filter with."""
+        w = 2 * math.pi * np.asarray(f, dtype=float)
+        with np.errstate(divide="ignore"):
+            if self.response == "lowpass":
+                x = w / self._wn
+            elif self.response == "highpass":
+                x = -self._wn / w
+            else:
+                w0, bw = math.sqrt(self._wn[0] * self._wn[1]), self._wn[1] - self._wn[0]
+                x = (w * w - w0 * w0) / (w * bw) if self.response == "bandpass" else w * bw / (w0 * w0 - w * w)
+        return np.clip(x, -1e30, 1e30)      # DC or a notch centre: far enough up the prototype's stopband
+
+    def _prototype_s11(self, x, port):
+        """S11 or S22 of the lossless prototype at jx. S22 follows from S11 by unitarity: S22 = -(-1)^m F(-s)/E,
+        with m the transmission zeros. The far stopband is an open at "in", and at "out" what a ladder ends in."""
+        s = 1j * np.atleast_1d(x)
+        if port == "in":
+            return _ratio(self._f, self._e, s)
+        return -(-1.0) ** len(self._proto[0]) * _ratio(_flip(self._f), self._e, s)
+
+    def _check_unitary(self):
+        x = np.concatenate([[0.0], np.geomspace(1e-3, 1e3, 401)])
+        s = 1j * x
+        z, p, k = self._proto
+        s21 = np.full(s.shape, k, dtype=complex)
+        for a in z:
+            s21 *= s - a
+        for a in p:
+            s21 /= s - a
+        err = float(np.abs(np.abs(self._prototype_s11(x, "in")) ** 2 + np.abs(s21) ** 2 - 1).max())
+        if err > UNITARY_TOL:
+            raise ValueError(f"vswr: reactive can't be worked out for a {self.family} filter of order {self.order} "
+                             f"(power balance out by {err:.1e}); use a lower order or a measured vswr")
+
+    def reflection_c(self, port, f):
+        """Reflection of the lossless filter with this response: |S11|^2 = 1 - |S21|^2, with the phase of a
+        ladder that starts with a series element. A shunt-first ladder has the same magnitude, opposite sign.
+
+        Insertion loss is taken from the transmitted wave only, and the magnitude is cut where S21 (with its
+        loss and leakage) and S11 would together exceed 1, or above REACTIVE_MIN_RL_DB, so this stays passive.
+        """
+        h = self._prototype_s11(self._prototype_w(f), port)
+        s21 = np.atleast_1d(self.s21_c(f))
+        limit = np.minimum(10 ** (-REACTIVE_MIN_RL_DB / 20), np.sqrt(np.maximum(1 - np.abs(s21) ** 2, 0.0)))
+        mag = np.abs(h)
+        return h * np.minimum(1.0, limit / np.maximum(mag, 1e-300))
+
+    def gamma_c(self, port, f):
+        if not self.reactive:
+            return super().gamma_c(port, f)
+        g = self.reflection_c(port, f)
+        return g if np.ndim(f) else complex(g[0])
+
+    def reflection(self, port, f):
+        if not self.reactive:
+            return super().reflection(port, f)
+        g = np.abs(self.reflection_c(port, f)) ** 2
+        return g if np.ndim(f) else float(g[0])
 
 
 @register("ideal_filter")
@@ -253,6 +403,7 @@ class Splitter(Block):
     ports = ("sum", "a", "b")
     default_in = "sum"
     default_out = "a"
+    td_linear = True
 
     def __init__(self, excess_loss_db=0.0, isolation_db=25.0, vswr=None):
         super().__init__(excess_loss_db=excess_loss_db, isolation_db=isolation_db, vswr=vswr)
@@ -268,6 +419,12 @@ class Splitter(Block):
         out_b = s.scaled(-self.loss)
         out_b.add_spectrum(a, -self.iso)
         return {"sum": out_sum, "a": out_a, "b": out_b}
+
+    def linear_c(self, port, f, op):
+        return [(q, np.full(np.shape(f), 10 ** (-g / 20))) for q, g in {
+            "sum": (("a", self.loss), ("b", self.loss)),
+            "a": (("sum", self.loss), ("b", self.iso)),
+            "b": (("sum", self.loss), ("a", self.iso))}[port]]
 
     def transfers(self, port, f, op):
         loss, iso = 10 ** (-self.loss / 10), 10 ** (-self.iso / 10)
