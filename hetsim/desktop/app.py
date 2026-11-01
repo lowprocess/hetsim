@@ -317,6 +317,18 @@ class MainWindow(QMainWindow):
         self.close_act = act("&Close", QKeySequence.StandardKey.Close, self.close_model, "Back to the start page")
         act("&Quit", QKeySequence.StandardKey.Quit, self.close)
         self._refresh_recent()
+        tools = self.menuBar().addMenu("&Analysis")
+        a = QAction("&Noise figure and VSWR…", self)
+        a.setStatusTip("Noise figure from a source to a port, and the match at every wire")
+        a.triggered.connect(self.open_analysis)
+        tools.addAction(a)
+
+    def open_analysis(self):
+        if self.model is None:
+            return
+        from .analysis import AnalysisDialog
+        self.analysis = AnalysisDialog(self.model, self.panel.collect(), self)
+        self.analysis.show()
 
     def _segmented(self, tb, items, fn):
         group = QActionGroup(self)

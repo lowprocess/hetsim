@@ -87,16 +87,21 @@ class Amplifier(Block):
                            from the *total* output power
     reverse_isolation_db : |S12| loss for waves travelling out->in
     harmonics            : generate HD2/HD3 as well as two-tone products
+    nf_db                : noise figure. Without it the amplifier adds no noise of its own
+    vswr                 : port mismatch, as for every block (see README)
     """
     ports = ("in", "out")
     default_in = "in"
     default_out = "out"
 
     def __init__(self, gain_db=0.0, oip3_dbm=None, iip3_dbm=None, oip2_dbm=None, iip2_dbm=None,
-                 op1db_dbm=None, reverse_isolation_db=30.0, harmonics=True):
+                 op1db_dbm=None, reverse_isolation_db=30.0, harmonics=True, nf_db=None, vswr=None):
         super().__init__(gain_db=gain_db, oip3_dbm=oip3_dbm, iip3_dbm=iip3_dbm, oip2_dbm=oip2_dbm,
                          iip2_dbm=iip2_dbm, op1db_dbm=op1db_dbm,
-                         reverse_isolation_db=reverse_isolation_db, harmonics=harmonics)
+                         reverse_isolation_db=reverse_isolation_db, harmonics=harmonics, nf_db=nf_db, vswr=vswr)
+        self.nf = parse_db(nf_db) if nf_db is not None else None
+        if self.nf is not None and self.nf < 0:
+            raise ValueError("nf_db can't be negative")
         self.gain = parse_db(gain_db)
         self.oip3 = parse_db(oip3_dbm) if oip3_dbm is not None else (
             parse_db(iip3_dbm) + self.gain if iip3_dbm is not None else None)
@@ -116,3 +121,20 @@ class Amplifier(Block):
         if self.oip3 is not None or self.oip2 is not None:
             lin.add_spectrum(nonlinear_products(lin, ctx, self.oip3, self.oip2, self.harmonics))
         return {"out": lin, "in": incident["out"].scaled(-self.rev_iso)}
+
+    def operating_point(self, incident):
+        """Linear gain in dB at the signal level present: small signals see the compressed gain."""
+        s = incident["in"]
+        if self.op1db is None or not len(s):
+            return self.gain
+        return self.gain + rapp_compression_db(s.total_dbm() + self.gain, self.op1db)
+
+    def transfers(self, port, f, op):
+        if port == "out":
+            return [("in", f, 10 ** (op / 10))]
+        return [("out", f, 10 ** (-self.rev_iso / 10))]
+
+    def noise_target(self, port, f, op):
+        if port == "out" and self.nf is not None:
+            return 10 ** ((self.nf + op) / 10)
+        return super().noise_target(port, f, op)

@@ -38,8 +38,8 @@ product reached by two paths merges by power sum.
 **Waves in both directions.** Each wire carries a forward and a reverse wave, and
 blocks map incident waves to outgoing waves at all their ports. The solver iterates
 to a fixed point. This is how LO leakage travels back through the LNA to the
-antenna, and how a second LO's leakage comes back through the first IF. It is also
-where VSWR will plug in, as a reflection term on each port.
+antenna, and how a second LO's leakage comes back through the first IF. A port's
+`vswr` is one more such term: part of what arrives comes straight back (see VSWR).
 
 **Blocks** (`python -m hetsim blocks` lists parameters):
 
@@ -47,9 +47,9 @@ where VSWR will plug in, as a reflection term on each port.
 |---|---|
 | `source` | CW tones, optional harmonics (`harmonics_dbc`); an antenna, a generator or an LO |
 | `mixer` | ports `rf`, `lo`, `if`. Ideal multiplier by default (LO ± RF, nothing else). Optional: conversion loss, LO→RF, LO→IF, RF→IF and RF→LO isolation, IIP3, IIP2, m×n spur table, nominal LO drive (warns if off), `max_order` (depth: only m×n spurs with m + n ≤ it; 2 = the 1×1 product only). Reciprocal, so it also up-converts. |
-| `amplifier` | gain, OIP3/IIP3, OIP2/IIP2 (two-tone IM, HD2, HD3), output P1dB (Rapp compression from total power), reverse isolation |
+| `amplifier` | gain, OIP3/IIP3, OIP2/IIP2 (two-tone IM, HD2, HD3), output P1dB (Rapp compression from total power), reverse isolation, noise figure (`nf_db`) |
 | `filter` | Butterworth, Chebyshev I/II, elliptic or Bessel LP/HP/BP/BS. Insertion loss and a finite ultimate rejection (`max_rejection_db`, e.g. ~80 dB for a crystal filter) |
-| `sparam` | Touchstone `.s2p` (\|S21\|, \|S12\|), e.g. a filter out of openEMS, mom25d or Qucs |
+| `sparam` | Touchstone `.s2p` (\|S21\|, \|S12\|; `vswr: file` adds S11 and S22), e.g. a filter out of openEMS, mom25d or Qucs |
 | `ideal_filter`, `attenuator`, `splitter`, `load` | as named |
 
 **Bands and source modes.** A source tone can carry a `band` (`[88MHz, 108MHz]` or
@@ -126,6 +126,90 @@ values.
 the usual datasheet convention. Load your mixer's chart from CSV (format in
 `hetsim/blocks/spurtable.py`). The `dbm_generic` preset holds illustrative values
 for a diode DBM, not any real part.
+
+## VSWR
+
+Any RF block takes `vswr`: one number for all its ports, a `[[freq, vswr], ...]` table
+(linear between points, edge values held), or either of those per port.
+
+```yaml
+lna:  {type: amplifier, gain_db: 18, vswr: {in: 1.8, out: 1.5}}
+mix:  {type: mixer, conversion_loss_db: 6, vswr: {rf: [[80MHz, 1.5], [120MHz, 2.0]], lo: 2.5, if: 1.8}}
+ant:  {type: source, vswr: 2.0, tones: [{name: RF, freq: 100MHz, power: -80}]}
+```
+
+A block's gain and loss stay as you gave them, as S21 measured in 50 Ω, so a mismatch
+against a matched neighbour costs nothing extra. It only sends power back. A filter's
+stopband does not reflect by itself: it stays absorptive unless you give it a table.
+
+Wires have no length, so the solvers can't know the phase of a bounce:
+
+- **Tone solver:** bounces add in power, which gives the average of the ripple.
+- **Time-domain solver:** bounces add in amplitude at zero phase, so it shows the top
+  of the ripple. `sparam` with `vswr: file` uses the file's real phase.
+
+`hetsim match` reports what each port sees, including everything behind it. A pad
+improves the return loss by twice its loss, an amplifier by its gain less its reverse
+isolation, and a mixer passes its far side's match through by conversion, both
+sidebands. Each figure comes in two forms: typical, with reflections added in power,
+and worst case, with them added in amplitude. The ripple is ±20·log(1 ± Γa·Γb)
+between the two ends of a wire.
+
+```
+$ python -m hetsim match examples/vhf_noise_match.yaml --tone RF
+wire                            frequency  VSWR a  VSWR b       ripple dB  product
+ant.out - pre.in                  100 MHz   2.000   1.815  -0.882/+0.800  RF
+pre.out - lna.in                  100 MHz   1.962   1.816  -0.859/+0.781  RF
+...
+$ python -m hetsim match examples/vhf_noise_match.yaml --port lna.in --range 88MHz:108MHz --points 11
+```
+
+`port_match()`, `match_sweep()` and `mismatch_report()` are the same from Python.
+
+## Noise figure
+
+`nf_db` on an amplifier or mixer sets its noise figure. Passive blocks need nothing: a
+passive circuit at T0 (290 K) delivers exactly kT0 whatever it holds, mismatches
+included, and that fixes each block's own noise. An amplifier without `nf_db` is
+noiseless, and the analysis says so. A mixer without it has NF = conversion loss, as a
+passive mixer does. A mixer's `nf_db` is the datasheet SSB figure.
+
+```
+$ python -m hetsim noise examples/vhf_noise_match.yaml --source ant --tone RF --port ifamp.out --band 10.6MHz:10.8MHz
+noise figure   2.89 dB   ant RF -> ifamp.out, LO - RF (100 MHz -> 10.7 MHz)
+gain          30.05 dB
+noise out     -88.8 dBm in 188.6 kHz noise bandwidth
+input floor  -118.8 dBm
+
+  share    dBm/Hz  noise at the output, from
+  51.4%    -144.7  ant: input termination at the wanted response
+  26.7%    -147.5  lna
+   ...
+```
+
+The figure is single-sideband, the IEEE definition: noise from the input termination at
+the image and spur responses counts against the receiver. An LNA with no image filter
+after it therefore reads 3 dB worse, and noise follows every m×1 response in the spur
+table, so the budget shows who adds what and the response list shows where it comes in.
+A filter ahead of the LNA doesn't help with the image, since the filter itself is then
+the source of noise there; it has to come after the gain.
+
+The trace works backwards from the output around a tone-solver operating point:
+
+- **Operating point.** LO frequencies come from the solve, and small signals see the
+  compressed gain, so a blocker in the netlist desensitises the receiver. A muted tone
+  can be the stimulus, so only the blockers set the operating point.
+- **Exact loops.** The paths form a linear system, solved directly. Reflections, reverse
+  leakage and isolation paths are all in it. A loop with gain of one or more is an error,
+  since there is no steady state to measure.
+- **`--band`.** Integrates over the band, giving the noise bandwidth and the input floor.
+  Without it you get the spot figure at the product.
+- **`--sweep`.** Steps the `mode: sweep` tones as a band sweep does, and the stimulus with
+  them if it has a band. Give the stimulus and its LO tracking bands.
+
+`noise_figure()` and `noise_sweep()` are the same from Python. The desktop app has both
+analyses under **Analysis > Noise figure and VSWR…**, for the circuit as the sliders
+have it, and both viewers offer `nf_db` and a single-number `vswr` as parameters.
 
 ## Time-domain / FFT solver
 
@@ -405,10 +489,15 @@ search.
 
 These are things that are not modelled yet, roughly in the order they would matter:
 
-- **Port mismatch / VSWR.** Interfaces are ideal 50 Ω. The wave solver is built
-  for it, so each block would gain a per-port Γ(f).
-- **Noise.** There is no NF, sensitivity or image-noise folding yet. A noise
-  density riding along with the tones is the natural next layer.
+- **Wire lengths.** Reflections have magnitude but no electrical length, so VSWR gives
+  a typical value and bounds rather than a true standing-wave pattern. Only a `sparam`
+  with `vswr: file` has real reflection phase, and only the TD solver uses it.
+- **Reactive filter stopbands.** Filters absorb out of band unless given a `vswr`
+  table. A real one reflects, which changes what neighbouring ports see there.
+- **Noise sources.** LO wideband noise is not converted by the mixer in the noise
+  figure (phase noise has its own analysis, and isn't included in NF). Noise is T0
+  thermal plus `nf_db`, flat with frequency; the source is always at T0, and
+  neither solver draws noise on a spectrum.
 - **Phase and coherence.** In the tone solver, same-frequency products add in
   power. The TD solver handles phase, but there is no quadrature (IQ) mixer block
   yet for image-reject architectures.
@@ -419,7 +508,7 @@ These are things that are not modelled yet, roughly in the order they would matt
 
 ## Tests
 
-`pytest tests` runs 58 checks. They compare against hand-calculated values:
+`pytest tests` runs 162 checks. They compare against hand-calculated values:
 mixer products, isolation, spur scaling, IM3/IM2 and harmonics, P1dB, filter
 edges and phase, reverse leakage, image rejection and netlist round trip. They
 also check that the TD and tone solvers agree, and that same-bin products add

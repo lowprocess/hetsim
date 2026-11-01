@@ -67,6 +67,7 @@ RANGES = {
     "reverse_isolation_db": (0, 100, 0.5, 30), "isolation_db": (0, 100, 0.5, 25),
     "order": (1, 12, 1, 3),
     "max_order": (2, 20, 1, 4),
+    "nf_db": (0, 30, 0.1, 3), "vswr": (1, 10, 0.05, 1.5),
 }
 ISO = (0, 100, 0.5, 40)
 SWEEP_BUDGET_S = 0.5   # time the viewer spends on a band sweep per update (automatic steps)
@@ -363,6 +364,11 @@ def describe(d: dict) -> list[dict]:
                 params.append({"path": f"tones.{i}.phase", "label": f"{tag} phase", "kind": "number",
                                "value": ph if ph is not None else 0.0, "min": 0, "max": 360, "step": 1,
                                "unit": "deg", "optional": True, "enabled": ph is not None})
+            vs = spec.get("vswr")
+            if not isinstance(vs, (dict, list, tuple)):
+                params.append({"path": "vswr", "label": "vswr", "kind": "number", "optional": True,
+                               "enabled": vs is not None, "value": parse_db(vs) if vs is not None else 1.5,
+                               "min": 1, "max": 10, "step": 0.05, "unit": ":1"})
             _apply_limits(params, limits)
             groups.append({"block": name, "type": kind, "params": params})
             continue
@@ -371,6 +377,8 @@ def describe(d: dict) -> list[dict]:
             if pname == "self" or pname in SKIP or p.kind in (p.VAR_POSITIONAL, p.VAR_KEYWORD):
                 continue
             raw = spec.get(pname, p.default)
+            if pname == "vswr" and isinstance(raw, (dict, list, tuple)) or raw == "file":
+                continue  # per-port, a table, or from a file: edit it in the netlist
             optional = p.default is None
             enabled = raw is not None
             entry = {"path": pname, "label": pname, "optional": optional, "enabled": enabled}
@@ -406,7 +414,7 @@ def describe(d: dict) -> list[dict]:
                 if pname in ("order", "max_order"):
                     entry.update(kind="int", value=int(v), min=lo, max=hi, step=1)
                 else:
-                    unit = "dBm" if pname.endswith("_dbm") else "dB"
+                    unit = ":1" if pname == "vswr" else "dBm" if pname.endswith("_dbm") else "dB"
                     entry.update(kind="number", value=v, min=min(lo, v), max=max(hi, v), step=step, unit=unit)
                 if kind == "filter" and pname == "ripple_db":
                     entry["when"] = {"family": ["cheby1", "ellip"]}

@@ -211,7 +211,13 @@ def simulate_td(circuit: Circuit, settings: Settings | None = None, td=None, **t
             res = models[n](b, dict(zip(b.ports, inc)), ctxs[n])
             for p in b.ports:
                 x = res.get(p)
-                outgoing[(n, p)] = zero if x is None else x
+                x = zero if x is None else x
+                if p in b.gamma2 and incident[(n, p)].any():
+                    h = ctxs[n].cache.get(("gamma", p, plan.n, plan.fs))
+                    if h is None:
+                        h = ctxs[n].cache[("gamma", p, plan.n, plan.fs)] = b.gamma_c(p, ctxs[n].f)
+                    x = x + ctxs[n].filt(incident[(n, p)], h)
+                outgoing[(n, p)] = x
         new_inc = {p: (outgoing[circuit.wires[p]] if p in circuit.wires else zero) for p in all_ports}
         done = True
         for p in all_ports:

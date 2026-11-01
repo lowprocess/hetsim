@@ -36,8 +36,8 @@ class Detector(Block):
     controls = ("out",)
     default_in = "in"
 
-    def __init__(self, fmin=None, fmax=None, detect="peak", scale="log"):
-        super().__init__(fmin=fmin, fmax=fmax, detect=detect, scale=None if scale == "log" else scale)
+    def __init__(self, fmin=None, fmax=None, detect="peak", scale="log", vswr=None):
+        super().__init__(fmin=fmin, fmax=fmax, detect=detect, scale=None if scale == "log" else scale, vswr=vswr)
         if detect not in DETECT:
             raise ValueError(f"detect must be one of {DETECT}, not {detect!r}")
         if scale not in SCALES:

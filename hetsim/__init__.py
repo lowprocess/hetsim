@@ -16,6 +16,8 @@ from .blocks import (REGISTRY, SPUR_PRESETS, Amplifier, Attenuator, Block, Filte
                      Source, SParamFilter, Splitter, SpurTable, register)
 from .circuit import Circuit, Result, Settings
 from .netlist import from_dict, load, save, to_dict
+from .smallsignal import (Interface, MatchSweep, MismatchReport, NoiseFigure, NoiseSweep, PortMatch, match_sweep,
+                          mismatch_report, noise_figure, noise_sweep, port_match)
 from .spectrum import Spectrum, Tone, vec, vec_label
 from .td import TDResult, TDSettings, TDSpectrum, simulate_td
 from .units import db_sum, fmt_freq, parse_db, parse_freq

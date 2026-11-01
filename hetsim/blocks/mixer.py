@@ -16,6 +16,9 @@ nothing else. Each extra parameter adds one non-ideal effect:
                          odd m x 1 products at 20*log10(m) dBc (3x1 at 9.5 dBc...)
     lo_drive_dbm         nominal LO level; a warning is raised if the actual LO
                          is more than lo_drive_tolerance_db away
+    nf_db                single-sideband noise figure as on a datasheet (both sidebands open to
+                         a load at T0). Default: the conversion loss, as for a passive mixer
+    vswr                 port mismatch, as for every block; ports rf, lo, if
 
 The mixer is treated as reciprocal: a tone arriving at the IF port is
 converted to the RF port the same way (so it works as an up-converter too, and
@@ -24,7 +27,6 @@ reverse leakage from later stages comes back out of the RF port).
 The strongest tone arriving at the LO port is taken as the LO; any other tones
 there only leak through the isolation paths. Tones at the same frequency from
 different products are kept separate and summed by power, not phase.
-Port mismatch (VSWR) is not modelled yet.
 """
 from __future__ import annotations
 
@@ -46,14 +48,18 @@ class Mixer(Block):
     def __init__(self, conversion_loss_db=0.0, lo_rf_isolation_db=None, lo_if_isolation_db=None,
                  rf_if_isolation_db=None, rf_lo_isolation_db=None, iip3_dbm=None, iip2_dbm=None,
                  spur_table=None, lo_drive_dbm=None, lo_drive_tolerance_db=3.0, lo_waveform="sine",
-                 max_order=None):
+                 max_order=None, nf_db=None, vswr=None):
         raw_table = spur_table.name if isinstance(spur_table, SpurTable) else spur_table
         super().__init__(conversion_loss_db=conversion_loss_db, lo_rf_isolation_db=lo_rf_isolation_db,
                          lo_if_isolation_db=lo_if_isolation_db, rf_if_isolation_db=rf_if_isolation_db,
                          rf_lo_isolation_db=rf_lo_isolation_db, iip3_dbm=iip3_dbm, iip2_dbm=iip2_dbm,
                          spur_table=raw_table, lo_drive_dbm=lo_drive_dbm,
                          lo_drive_tolerance_db=lo_drive_tolerance_db,
-                         lo_waveform=None if lo_waveform == "sine" else lo_waveform, max_order=max_order)
+                         lo_waveform=None if lo_waveform == "sine" else lo_waveform, max_order=max_order,
+                         nf_db=nf_db, vswr=vswr)
+        self.nf = parse_db(nf_db) if nf_db is not None else None
+        if self.nf is not None and self.nf < 0:
+            raise ValueError("nf_db can't be negative")
         d = lambda x: parse_db(x) if x is not None else None  # noqa: E731
         self.cl = parse_db(conversion_loss_db)
         self.lo_rf = d(lo_rf_isolation_db)
@@ -145,3 +151,31 @@ class Mixer(Block):
         self._convert(rf, lo, out_if, ctx)      # down-conversion (RF -> IF)
         self._convert(if_in, lo, out_rf, ctx)   # reciprocal path (IF -> RF)
         return {"rf": out_rf, "lo": out_lo, "if": out_if}
+
+    # -- small signal -------------------------------------------------------
+    def operating_point(self, incident):
+        """The LO frequency, or None without one."""
+        los = incident["lo"].strongest(1)
+        return los[0].freq if los else None
+
+    def transfers(self, port, f, flo):
+        leak = {"if": (("lo", self.lo_if), ("rf", self.rf_if)),
+                "rf": (("lo", self.lo_rf), ("if", self.rf_if)),
+                "lo": (("if", self.lo_if), ("rf", self.rf_lo))}[port]
+        out = [(q, f, 10 ** (-iso / 10)) for q, iso in leak if iso is not None]
+        if port == "lo" or flo is None:
+            return out
+        q = "rf" if port == "if" else "if"
+        # noise is far below any reference level, so only the n = 1 products (linear in the input) carry it
+        for (m, n), dbc in self.spur_entries().items():
+            if n != 1 or m == 0:
+                continue
+            g = 10 ** (-(self.cl + dbc) / 10)
+            # the output at f comes from inputs at m*fLO + f and |m*fLO - f|
+            out += [(q, fi, g) for fi in (m * flo + f, abs(m * flo - f)) if fi > 0]
+        return out
+
+    def noise_target(self, port, f, flo):
+        if port != "lo" and self.nf is not None and flo is not None:
+            return 10 ** ((self.nf - self.cl) / 10)
+        return super().noise_target(port, f, flo)

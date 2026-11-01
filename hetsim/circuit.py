@@ -4,7 +4,8 @@ Ports are joined point-to-point by wires; each wire carries a wave in each
 direction. The solver repeatedly asks every block for its outgoing waves given
 its incident waves, and feeds each outgoing wave to the port at the far end of
 its wire, until nothing changes (to within tol_db). A port with no wire is a
-matched termination: what leaves it is lost (but recorded).
+matched termination: what leaves it is lost (but recorded). A port with a `vswr`
+also sends part of what arrives straight back; bounces add in power here.
 
 Branching needs an explicit Splitter, because a wire joins exactly two ports.
 """
@@ -173,6 +174,8 @@ class Circuit:
                 res = b.respond({p: incident[(n, p)] for p in b.ports}, ctxs[n])
                 for p in b.ports:
                     s = res.get(p) or Spectrum()
+                    if p in b.gamma2:
+                        s.add_spectrum(b.reflected(p, incident[(n, p)]))
                     outgoing[(n, p)] = s.prune(st.floor_dbm, st.max_tones)
             new_inc = {}
             for p in all_ports:

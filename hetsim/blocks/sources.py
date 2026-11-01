@@ -182,14 +182,16 @@ class Source(Block):
         Source(tones=[{"name": "RF", "band": ["88MHz", "108MHz"], "mode": "sweep", "power": -60}])
 
     Waves arriving back at the source port (e.g. LO leaking out of the
-    antenna) are absorbed and can be inspected with Result.incident().
+    antenna) are absorbed, apart from what `vswr` reflects, and can be inspected
+    with Result.incident().
     """
     ports = ("out", "sweep")
     controls = ("sweep",)   # the swept tone's frequency, for an X/Y plot's x
     default_out = "out"
 
-    def __init__(self, freq=None, power=None, name=None, tones=None, harmonics_dbc=None, phase=None):
-        super().__init__(freq=freq, power=power, name=name, tones=tones, harmonics_dbc=harmonics_dbc, phase=phase)
+    def __init__(self, freq=None, power=None, name=None, tones=None, harmonics_dbc=None, phase=None, vswr=None):
+        super().__init__(freq=freq, power=power, name=name, tones=tones, harmonics_dbc=harmonics_dbc, phase=phase,
+                         vswr=vswr)
         specs = []
         if tones:
             for i, t in enumerate(tones):
@@ -241,6 +243,8 @@ class Source(Block):
         p = {"tones": [t.to_dict() for t in self.specs]}
         if self.harmonics_dbc:
             p["harmonics_dbc"] = list(self.harmonics_dbc)
+        if "vswr" in self.params:
+            p["vswr"] = self.params["vswr"]
         return p
 
     def respond(self, incident, ctx):
@@ -254,9 +258,12 @@ class Source(Block):
 
 @register("load")
 class Load(Block):
-    """Matched termination / probe point. Absorbs whatever arrives."""
+    """Termination / probe point. Absorbs whatever arrives, apart from what `vswr` reflects."""
     ports = ("in",)
     default_in = "in"
+
+    def __init__(self, vswr=None):
+        super().__init__(vswr=vswr)
 
     def respond(self, incident, ctx):
         return {"in": Spectrum()}

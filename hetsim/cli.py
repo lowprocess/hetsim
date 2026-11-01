@@ -1,4 +1,4 @@
-"""Command line: python -m hetsim {run,responses,blocks,view,app} ..."""
+"""Command line: python -m hetsim {run,responses,noise,match,blocks,view,app} ..."""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,7 @@ from . import __datecode__
 from .analysis import find_responses, response_sweep
 from .blocks import REGISTRY
 from .netlist import load
+from .smallsignal import match_sweep, mismatch_report, noise_figure, noise_sweep, port_match
 from .units import parse_db, parse_freq
 
 
@@ -58,6 +59,26 @@ def main(argv=None):
     s.add_argument("--limit", type=int, default=30)
     s.add_argument("--sweep-points", type=int, default=0, help="also run a swept curve with N points")
     s.add_argument("--plot")
+
+    n = sub.add_parser("noise", help="noise figure from a source tone to a port, with a budget of who adds what")
+    n.add_argument("netlist")
+    n.add_argument("--source", required=True, help="source block whose termination is the reference")
+    n.add_argument("--tone", default="0", help="the signal tone: name or index (a muted tone works)")
+    n.add_argument("--port", required=True)
+    n.add_argument("--band", type=_band, help="output band fmin:fmax to integrate over (default: spot, at the product)")
+    n.add_argument("--points", type=int, default=21, help="frequencies across --band")
+    n.add_argument("--sweep", action="store_true", help="step the tones with mode: sweep and list NF at each step")
+    n.add_argument("--sweep-points", type=int, help="steps for --sweep (default: the tones' points)")
+    n.add_argument("--json", action="store_true")
+
+    m = sub.add_parser("match", help="VSWR looking into a port, or at both ends of every wire")
+    m.add_argument("netlist")
+    m.add_argument("--port", help="block.port to look into (default: report every wire)")
+    m.add_argument("--freq", help="frequency, with --port")
+    m.add_argument("--range", type=_band, help="sweep fmin:fmax, with --port")
+    m.add_argument("--points", type=int, default=21)
+    m.add_argument("--tone", help="without --port: follow this tone down the chain instead of each wire's strongest")
+    m.add_argument("--json", action="store_true")
 
     sub.add_parser("blocks", help="list block types and their parameters")
 
@@ -139,6 +160,12 @@ def main(argv=None):
             plt.close(ax.figure)
         return 0
 
+    if a.cmd == "noise":
+        return _noise(a, circuit, st)
+
+    if a.cmd == "match":
+        return _match(a, circuit, st)
+
     if a.cmd == "responses":
         tab = find_responses(circuit, a.source, a.port, a.band, *a.range, tone=a.tone, settings=st, mute=a.mute)
         print(f"responses of {a.source} -> {a.port} in band {a.band[0]:g}:{a.band[1]:g} Hz")
@@ -155,6 +182,65 @@ def main(argv=None):
             ax.figure.savefig(a.plot, dpi=150)
             plt.close(ax.figure)
         return 0
+
+
+def _noise(a, circuit, st):
+    tone = int(a.tone) if a.tone.lstrip("-").isdigit() else a.tone
+    try:
+        if a.sweep:
+            sw = noise_sweep(circuit, a.source, a.port, a.band, tone, st, a.sweep_points)
+            if a.json:
+                nan_none = lambda x: None if x != x else float(x)  # noqa: E731
+                json.dump([{"f_in": float(f), "nf_db": nan_none(n), "gain_db": nan_none(g)}
+                           for f, n, g in zip(sw.f_in, sw.nf_db, sw.gain_db)], sys.stdout, indent=1)
+                print()
+            else:
+                print(sw.table())
+            return 0
+        r = noise_figure(circuit, a.source, a.port, a.band, tone, st, a.points)
+    except ValueError as e:
+        print(f"hetsim noise: {e}", file=sys.stderr)
+        return 1
+    if a.json:
+        json.dump(r.to_dict(), sys.stdout, indent=1)
+        print()
+    else:
+        print(r.table())
+    return 0
+
+
+def _match(a, circuit, st):
+    if a.port is None:
+        rep = mismatch_report(circuit, st, a.tone)
+        if a.json:
+            json.dump([{"a": i.a.port, "b": i.b.port, "freq": i.freq, "product": i.product, "vswr_a": i.a.vswr,
+                        "vswr_b": i.b.vswr, "ripple_db": list(i.ripple_db)} for i in rep.interfaces],
+                      sys.stdout, indent=1)
+            print()
+        else:
+            print(rep.table())
+        return 0
+    if a.range:
+        sw = match_sweep(circuit, a.port, np.linspace(*a.range, a.points), st)
+        if a.json:
+            json.dump([{"freq": float(f), "vswr": float(v), "vswr_worst": float(w), "return_loss_db": float(r)}
+                       for f, v, w, r in zip(sw.freqs, sw.vswr, sw.vswr_worst, sw.return_loss_db)], sys.stdout, indent=1)
+            print()
+        else:
+            print(sw.table())
+        return 0
+    if a.freq is None:
+        print("hetsim match: --port needs --freq or --range", file=sys.stderr)
+        return 1
+    m = port_match(circuit, a.port, a.freq, st)
+    if a.json:
+        json.dump({"port": m.port, "freq": m.freq, "vswr": m.vswr, "vswr_worst": m.vswr_worst,
+                   "return_loss_db": m.return_loss_db, "mismatch_loss_db": m.mismatch_loss_db}, sys.stdout, indent=1)
+        print()
+    else:
+        print(f"looking into {m.port} at {parse_freq(a.freq):g} Hz: VSWR {m.vswr:.3f}:1, return loss "
+              f"{m.return_loss_db:.2f} dB, mismatch loss {m.mismatch_loss_db:.3f} dB, worst case VSWR {m.vswr_worst:.3f}:1")
+    return 0
 
 
 def _run_td(a, circuit, st):

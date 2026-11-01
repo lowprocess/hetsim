@@ -17,8 +17,8 @@ from .base import Block, TwoPort, register
 class Attenuator(TwoPort):
     """Flat loss (pad, cable, a passive block you only know the loss of)."""
 
-    def __init__(self, loss_db=0.0):
-        super().__init__(loss_db=loss_db)
+    def __init__(self, loss_db=0.0, vswr=None):
+        super().__init__(loss_db=loss_db, vswr=vswr)
         self.loss_db = parse_db(loss_db)
 
     def s21_db(self, f):
@@ -52,10 +52,10 @@ class Filter(TwoPort):
 
     def __init__(self, response="bandpass", family="butter", order=3, fc=None, f0=None, bw=None,
                  f1=None, f2=None, ripple_db=0.5, stop_db=60.0, insertion_loss_db=0.0,
-                 max_rejection_db=120.0):
+                 max_rejection_db=120.0, vswr=None):
         super().__init__(response=response, family=family, order=order, fc=fc, f0=f0, bw=bw, f1=f1, f2=f2,
                          ripple_db=ripple_db, stop_db=stop_db, insertion_loss_db=insertion_loss_db,
-                         max_rejection_db=max_rejection_db)
+                         max_rejection_db=max_rejection_db, vswr=vswr)
         self.response = _RESPONSES[response.lower()]
         self.family = _FAMILIES[family.lower()]
         self.order = int(order)
@@ -134,8 +134,9 @@ class Filter(TwoPort):
 class IdealFilter(TwoPort):
     """Brick-wall filter: passes [fmin, fmax] with insertion loss, rejects the rest by rejection_db."""
 
-    def __init__(self, fmin=None, fmax=None, insertion_loss_db=0.0, rejection_db=200.0):
-        super().__init__(fmin=fmin, fmax=fmax, insertion_loss_db=insertion_loss_db, rejection_db=rejection_db)
+    def __init__(self, fmin=None, fmax=None, insertion_loss_db=0.0, rejection_db=200.0, vswr=None):
+        super().__init__(fmin=fmin, fmax=fmax, insertion_loss_db=insertion_loss_db, rejection_db=rejection_db,
+                         vswr=vswr)
         self.fmin = parse_freq(fmin) if fmin is not None else 0.0
         self.fmax = parse_freq(fmax) if fmax is not None else math.inf
         self.il = parse_db(insertion_loss_db)
@@ -185,14 +186,20 @@ def read_touchstone_s2p(path):
 class SParamFilter(TwoPort):
     """Measured or simulated 2-port from a Touchstone .s2p file (e.g. out of openEMS / mom25d / qucs).
 
-    Only |S21| and |S12| are used for now. Outside the file's frequency range the
-    edge value is held and a warning is issued.
+    Only |S21| and |S12| are used unless `vswr: file` asks for the file's S11 and S22 as the
+    port reflections too. Outside the file's frequency range the edge value is held and a
+    warning is issued.
     """
 
-    def __init__(self, file, extra_loss_db=0.0):
-        super().__init__(file=str(file), extra_loss_db=extra_loss_db)
+    def __init__(self, file, extra_loss_db=0.0, vswr=None):
+        super().__init__(file=str(file), extra_loss_db=extra_loss_db, vswr=vswr)
         self.f, S = read_touchstone_s2p(file)
         self._S21, self._S12 = S[:, 1, 0], S[:, 0, 1]
+        self._S = {"in": S[:, 0, 0], "out": S[:, 1, 1]} if vswr == "file" else {}
+        if vswr == "file":
+            self.gamma2 = {p: (self.f, np.clip(np.abs(s) ** 2, 0.0, 1.0)) for p, s in self._S.items()}
+        elif isinstance(vswr, str) and vswr.lower() == "file":
+            raise ValueError("write vswr: file in lower case")
         self._s21 = 20 * np.log10(np.abs(S[:, 1, 0]) + 1e-30)
         self._s12 = 20 * np.log10(np.abs(S[:, 0, 1]) + 1e-30)
         self.extra = parse_db(extra_loss_db)
@@ -212,6 +219,12 @@ class SParamFilter(TwoPort):
 
     def s12_db(self, f):
         return self._interp(self._s12, f)
+
+    def gamma_c(self, port, f):
+        if port not in self._S:
+            return super().gamma_c(port, f)
+        s = self._S[port]
+        return np.interp(f, self.f, np.abs(s)) * np.exp(1j * np.interp(f, self.f, np.unwrap(np.angle(s))))
 
     def _interp_c(self, S, f):
         mag = self._interp(20 * np.log10(np.abs(S) + 1e-30), f)
@@ -241,8 +254,8 @@ class Splitter(Block):
     default_in = "sum"
     default_out = "a"
 
-    def __init__(self, excess_loss_db=0.0, isolation_db=25.0):
-        super().__init__(excess_loss_db=excess_loss_db, isolation_db=isolation_db)
+    def __init__(self, excess_loss_db=0.0, isolation_db=25.0, vswr=None):
+        super().__init__(excess_loss_db=excess_loss_db, isolation_db=isolation_db, vswr=vswr)
         self.loss = 10 * math.log10(2) + parse_db(excess_loss_db)
         self.iso = parse_db(isolation_db)
 
@@ -255,3 +268,9 @@ class Splitter(Block):
         out_b = s.scaled(-self.loss)
         out_b.add_spectrum(a, -self.iso)
         return {"sum": out_sum, "a": out_a, "b": out_b}
+
+    def transfers(self, port, f, op):
+        loss, iso = 10 ** (-self.loss / 10), 10 ** (-self.iso / 10)
+        return {"sum": [("a", f, loss), ("b", f, loss)],
+                "a": [("sum", f, loss), ("b", f, iso)],
+                "b": [("sum", f, loss), ("a", f, iso)]}[port]

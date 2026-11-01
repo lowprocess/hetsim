@@ -1,0 +1,30 @@
+# The VHF receiver with noise figures and port mismatches.
+#   python -m hetsim noise examples/vhf_noise_match.yaml --source ant --tone RF --port ifamp.out --band 10.6MHz:10.8MHz
+#   python -m hetsim match examples/vhf_noise_match.yaml --tone RF
+#   python -m hetsim match examples/vhf_noise_match.yaml --port lna.in --range 88MHz:108MHz --points 11
+# Move the image filter `img` ahead of the LNA and see the NF rise: the LNA's own noise at the image gets through.
+name: VHF noise and match
+blocks:
+  ant:
+    type: source
+    vswr: 2.0                          # the antenna
+    tones:
+      - {name: RF, freq: 100MHz, power: -80}
+  pre:  {type: filter, response: bandpass, family: butter, order: 3, f1: 80MHz, f2: 120MHz, insertion_loss_db: 0.5, vswr: 1.3}
+  lna:  {type: amplifier, gain_db: 18, nf_db: 1.2, oip3_dbm: 30, op1db_dbm: 18, reverse_isolation_db: 30, vswr: {in: 1.8, out: 1.5}}
+  img:  {type: filter, response: bandpass, family: butter, order: 5, f1: 88MHz, f2: 108MHz, insertion_loss_db: 1.5}
+  lo:   {type: source, name: LO, freq: 110.7MHz, power: 7}
+  mix:
+    type: mixer
+    conversion_loss_db: 6
+    lo_rf_isolation_db: 35
+    lo_if_isolation_db: 30
+    rf_if_isolation_db: 25
+    spur_table: dbm_generic
+    nf_db: 6.5
+    vswr: {rf: [[80MHz, 1.5], [120MHz, 2.0]], lo: 2.5, if: 1.8}   # frequency-dependent on rf
+  iff:  {type: filter, response: bandpass, family: cheby1, order: 4, f0: 10.7MHz, bw: 200kHz, ripple_db: 0.5, max_rejection_db: 90}
+  ifamp: {type: amplifier, gain_db: 20, nf_db: 4, oip3_dbm: 25}
+chain: [ant, pre, lna, img, mix, iff, ifamp]
+wires:
+  - [lo.out, mix.lo]

@@ -323,3 +323,25 @@ def test_animated_sweep_and_xy_plot(app, tmp_path):
         assert w.xy_tabs.widget(0).record()["y_unit"] == "V"
     finally:
         _dispose(w, app)
+
+
+def test_analysis_dialog(win, app):
+    from hetsim.desktop.analysis import AnalysisDialog
+    d = AnalysisDialog(win.model, win.panel.collect(), win)
+    d.source.setCurrentText("ant")
+    d.tone.setCurrentText("RF")
+    d.port.setCurrentText("ifamp.out")
+    d.run_noise()
+    assert "noise figure" in d.out.toPlainText() and "LO - RF" in d.out.toPlainText()
+    d.band.setText("1GHz:2GHz")
+    d.run_noise()
+    assert "no product" in d.out.toPlainText()
+    d.band.setText("nonsense")
+    d.run_noise()
+    assert "low:high" in d.out.toPlainText()
+    d.run_match()
+    assert "ant.out" in d.out.toPlainText()
+    d.close()
+    win.open_analysis()
+    assert win.analysis.isVisible() and win.analysis.source.count() == 2
+    win.analysis.close()
