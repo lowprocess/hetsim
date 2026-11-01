@@ -1,0 +1,51 @@
+
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "local-large/qwen3.8-27b",
+
+  "providers": {
+    "local-large": {
+      "name": "Local Qwen 3.8 27B",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8001/v1"
+      },
+      "models": {
+        "qwen3.8-27b": {
+          "name": "Qwen 3.8 27B UD-IQ3",
+          "limit": {
+            "context": 81920,
+            "output": 32768
+          }
+        }
+      }
+    },
+
+    "local-worker": {
+      "name": "Local Qwen Coder Worker",
+      "package": "@opencode/ai/providers/openai-compatible",
+      "settings": {
+        "baseURL": "http://127.0.0.1:8002/v1"
+      },
+      "models": {
+        "qwen2.5-coder-3b": {
+          "name": "Qwen2.5-Coder 3B Q8_0",
+          "limit": {
+            "context": 24000,
+            "output": 8192
+          }
+        }
+      }
+    }
+  },
+
+  "agents": {
+    "qwen-worker": {
+      "description": "Small coding worker for delegated implementation tasks",
+      "mode": "subagent",
+      "model": "local-worker/qwen2.5-coder-3b",
+      "system": "You are a focused coding worker. Complete only the task delegated to you. Keep changes small, follow existing project conventions, and report exactly which files you changed and which tests you actually ran."
+    }
+  }
+}

@@ -1,0 +1,79 @@
+name: spectrum analyser
+blocks:
+  lpf:
+    type: filter
+    response: lowpass
+    family: butter
+    order: 3
+    fc: 3400000000
+    insertion_loss_db: 0.5
+    max_rejection_db: 120
+  lna:
+    type: amplifier
+    gain_db: 10
+    oip3_dbm: 35
+    reverse_isolation_db: 30
+    harmonics: false
+  lo1:
+    type: source
+    tones:
+      - name: LO1
+        freq: 4222000000
+        power: 7
+        band: [3200000000, 6400000000]
+        mode: sweep
+        points: 32
+        spacing: log
+  mix1:
+    type: mixer
+    conversion_loss_db: 6.5
+    lo_rf_isolation_db: 40
+    lo_if_isolation_db: 35
+    rf_if_isolation_db: 30
+    iip3_dbm: 15
+    spur_table: ideal
+    lo_drive_dbm: 7
+    lo_drive_tolerance_db: 3
+    lo_waveform: sine
+  iff:
+    type: filter
+    response: bandpass
+    family: butter
+    order: 5
+    f0: 10000000
+    bw: 16000000
+    insertion_loss_db: 0
+    max_rejection_db: 80
+  ifamp:
+    type: amplifier
+    gain_db: 30
+    oip3_dbm: 25
+    reverse_isolation_db: 30
+    harmonics: true
+  amp1: {type: amplifier, gain_db: 10}
+  det1: {type: detector, detect: peak}
+  xy1: {type: xyplot}
+  src1: {type: source, freq: 10MHz, power: -30, name: SRC1}
+settings: {}
+wires:
+  - [lpf.out, lna.in]
+  - [iff.out, ifamp.in]
+  - [lo1.out, mix1.lo]
+  - [lna.out, mix1.rf]
+  - [mix1.if, amp1.in]
+  - [ifamp.out, det1.in]
+  - [det1.out, xy1.y]
+  - [lo1.sweep, xy1.x]
+  - [amp1.out, iff.in]
+  - [src1.out, lpf.in]
+layout:
+  lpf: {x: 140, y: 0}
+  lna: {x: 280, y: 0}
+  lo1: {x: 280, y: -120}
+  mix1: {x: 420, y: 0}
+  iff: {x: 700, y: 0}
+  ifamp: {x: 880, y: 0}
+  amp1: {x: 540, y: 0}
+  det1: {x: 1040, y: 0}
+  xy1: {x: 1220, y: 20}
+  src1: {x: -20, y: 0}
